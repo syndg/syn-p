@@ -98,7 +98,7 @@ built-in defaults  <-  global config  <-  project config  <-  CLI overlays  <-  
 
 From highest to lowest:
 
-1. **Runtime overrides** — dedicated CLI flags and feature env vars applied in memory for the current process: `--model`, `--smol`, `--slow`, `--plan`, `--approval-mode`, `--auto-approve`/`--yolo`, `--hide-thinking`, `--advisor`, `--no-pty`, `--api-key`, and protocol-mode defaults. Never persisted.
+1. **Runtime overrides** — dedicated CLI flags and feature env vars applied in memory for the current process: `--model`, `--smol`, `--slow`, `--plan`, `--tui-mode`, `--approval-mode`, `--auto-approve`/`--yolo`, `--hide-thinking`, `--advisor`, `--no-pty`, `--api-key`, and protocol-mode defaults. Never persisted.
 2. **CLI config overlays** — each `--config <file>`; later overlay files override earlier ones.
 3. **Project settings** — `<cwd>/.omp/settings.json` then `<cwd>/.omp/config.yml` (and contributions from other discovery providers at project level).
 4. **Global settings** — `~/.omp/agent/config.yml`.
@@ -665,6 +665,10 @@ images:
   blockImages: false
 tui:
   hyperlinks: auto # off, auto, always
+  mode: regular # regular, fullscreen
+  fullscreenScrollbar: auto # auto, always, hidden
+  fullscreenCopyOnSelect: true
+  fullscreenExitOutput: transcript # transcript, resume-hint
 ```
 
 | Key                         | Type    | Default          | Values                                                                    |
@@ -683,6 +687,10 @@ tui:
 | `images.autoResize`         | boolean | `true`           | Resize large images for model compatibility.                              |
 | `images.blockImages`        | boolean | `false`          | Never send images to providers.                                           |
 | `tui.hyperlinks`            | enum    | `auto`           | `off`, `auto`, `always`.                                                  |
+| `tui.mode`                 | enum    | `regular`        | `regular` uses native terminal scrollback. `fullscreen` keeps the composer fixed and scrolls the transcript inside OMP. |
+| `tui.fullscreenScrollbar`  | enum    | `auto`           | `auto`, `always`, `hidden`. Controls the right-column scrollbar in fullscreen mode. |
+| `tui.fullscreenCopyOnSelect` | boolean | `true`         | Copy selected transcript text when the mouse is released in fullscreen mode. |
+| `tui.fullscreenExitOutput` | enum    | `transcript`     | `transcript` writes unretired rows on exit. `resume-hint` restores the shell without printing the transcript. |
 | `tui.resizeScrollback`      | enum    | `rebuild`        | How a settled width resize refreshes transcript rows kept in terminal scrollback: `append` replays the transcript at the new width below retained history, `rebuild` erases pane scrollback then replays one current-width copy, `preserve` repaints only the viewport. |
 
 For a custom status line, set `statusLine.preset: custom` and configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`.

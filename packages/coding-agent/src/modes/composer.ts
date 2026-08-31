@@ -14,9 +14,17 @@ import {
 	type ViewportSize,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import { copyToClipboard } from "../utils/clipboard";
+import { openPath } from "../utils/open";
 import { CustomEditor } from "./components/custom-editor";
 import { type AnimationFrame, TranscriptContainer } from "./components/transcript-container";
 import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./components/welcome";
+import {
+	FullscreenComposer,
+	type FullscreenExitOutput,
+	type FullscreenScrollbar,
+	type TuiMode,
+} from "./fullscreen-composer";
 import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
 
 const DOUBLE_INTERRUPT_MS = 500;
@@ -28,6 +36,10 @@ export interface ComposerPreferences {
 	readonly showHardwareCursor: boolean;
 	readonly maxInlineImages: number;
 	readonly resizeScrollback: ResizeScrollbackMode;
+	readonly tuiMode: TuiMode;
+	readonly fullscreenScrollbar: FullscreenScrollbar;
+	readonly fullscreenCopyOnSelect: boolean;
+	readonly fullscreenExitOutput: FullscreenExitOutput;
 	readonly imeSafeCursor: boolean;
 	readonly autocompleteMaxVisible: number;
 	readonly spellingTypoDetection: boolean;
@@ -42,6 +54,10 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	showHardwareCursor: true,
 	maxInlineImages: 8,
 	resizeScrollback: "rebuild",
+	tuiMode: "regular",
+	fullscreenScrollbar: "auto",
+	fullscreenCopyOnSelect: true,
+	fullscreenExitOutput: "transcript",
 	imeSafeCursor: false,
 	autocompleteMaxVisible: 10,
 	spellingTypoDetection: true,
@@ -109,6 +125,7 @@ export class Composer implements TerminalFrameProvider {
 	readonly #exit: (code: number) => void;
 	readonly #now: () => number;
 	#preferences: ComposerPreferences;
+	readonly #fullscreen: FullscreenComposer;
 	#welcome: WelcomeComponent | undefined;
 	#version = "";
 	#modelName = "";
@@ -175,6 +192,27 @@ export class Composer implements TerminalFrameProvider {
 		this.ui.setFrameProvider(this);
 		this.ui.setMaxInlineImages(this.#preferences.maxInlineImages);
 		this.ui.setResizeScrollback(this.#preferences.resizeScrollback);
+		this.#fullscreen = new FullscreenComposer(
+			{
+				requestRender: () => {
+					if (this.#started) this.ui.requestRender();
+				},
+				requestScrollRender: () => {
+					if (this.#started) this.ui.requestRender(false, { interactive: true });
+				},
+				hintScroll: (delta, top, bottom) => {
+					this.ui.hintPrimaryFullscreenScroll(delta, top, bottom);
+				},
+				copySelection: copyToClipboard,
+				openUrl: openPath,
+				styleJumpToBottom: text => theme.bg("selectedBg", theme.bold(theme.fg("text", text))),
+				styleSelection: text => theme.bg("selectedBg", theme.fg("text", text)),
+				styleScrollbarThumb: text => theme.bg("selectedBg", text),
+				scrollbar: this.#preferences.fullscreenScrollbar,
+				copyOnSelect: this.#preferences.fullscreenCopyOnSelect,
+			},
+			this.#preferences.tuiMode === "fullscreen",
+		);
 
 		this.#editor = new CustomEditor(getEditorTheme());
 		this.editor.disableSubmit = true;
@@ -205,6 +243,10 @@ export class Composer implements TerminalFrameProvider {
 		this.ui.addChild(this.editor);
 		this.ui.addChild(this.#statusHost);
 		this.ui.setFocus(this.editor);
+		this.ui.addInputListener(data => {
+			if (this.ui.hasOverlay()) return;
+			if (this.#fullscreen.handleInput(data)) return { consume: true };
+		});
 	}
 	/** Compose the bounded mutable viewport and the next ordered history append. */
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
@@ -221,9 +263,27 @@ export class Composer implements TerminalFrameProvider {
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
-			return { viewport: this.#renderRoots(roots, width).slice(-rows) };
+			if (!this.#fullscreen.enabled || this.#historyFlush) {
+				return { viewport: this.#renderRoots(roots, width).slice(-rows) };
+			}
+			const contentWidth = this.#fullscreen.contentWidth(width);
+			const header = this.#header.render(contentWidth);
+			const dock = this.#renderRoots([this.#bootstrapInputGap, this.editor, this.#statusHost], width);
+			const rendered = this.#fullscreen.render({ width, height: rows, content: header, dock });
+			return { viewport: rendered, forceClearRows: this.#fullscreen.forceClearRows };
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
+		if (this.#fullscreen.enabled && !this.#historyFlush) {
+			const contentWidth = this.#fullscreen.contentWidth(width);
+			const header = this.#header.render(contentWidth);
+			const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), contentWidth);
+			const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
+			const now = performance.now();
+			const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
+			const content = [...header, ...preRoots, ...transcript.renderFullscreen(contentWidth, frame)];
+			const rendered = this.#fullscreen.render({ width, height: rows, content, dock: after });
+			return { viewport: rendered, forceClearRows: this.#fullscreen.forceClearRows };
+		}
 		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
 		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
 		// Offer history under capacity pressure only: blocks stay live (and keep
@@ -301,6 +361,7 @@ export class Composer implements TerminalFrameProvider {
 
 	/** Forces every currently eligible finalized prefix to retire before stop. */
 	beginHistoryFlush(): void {
+		if (this.#fullscreen.enabled && this.#preferences.fullscreenExitOutput === "resume-hint") return;
 		this.#historyFlush = true;
 		// A pending replay would re-render and re-stream the entire committed
 		// ledger during shutdown; the terminal already holds that history, so
@@ -467,6 +528,7 @@ export class Composer implements TerminalFrameProvider {
 	start(options: ComposerStartOptions = {}): void {
 		if (this.#started || this.#stopped) return;
 		this.#started = true;
+		this.ui.setPrimaryFullscreen(this.#fullscreen.enabled);
 		this.ui.start({ clearScrollback: options.clearScrollback === true, deferInput: options.deferInput === true });
 		if (options.playWelcomeIntro !== false) this.playWelcomeIntro();
 	}
@@ -491,6 +553,12 @@ export class Composer implements TerminalFrameProvider {
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.ui.setMaxInlineImages(this.#preferences.maxInlineImages);
 		if (update.resizeScrollback !== undefined) this.ui.setResizeScrollback(update.resizeScrollback);
+		this.#fullscreen.setOptions({
+			scrollbar: this.#preferences.fullscreenScrollbar,
+			copyOnSelect: this.#preferences.fullscreenCopyOnSelect,
+		});
+		this.#fullscreen.setEnabled(this.#preferences.tuiMode === "fullscreen");
+		if (this.#started) this.ui.setPrimaryFullscreen(this.#fullscreen.enabled);
 		this.editor.setImeSafeCursorLayout(this.#preferences.imeSafeCursor);
 		this.editor.setAutocompleteMaxVisible(this.#preferences.autocompleteMaxVisible);
 		this.editor.setSpellingFeatures({

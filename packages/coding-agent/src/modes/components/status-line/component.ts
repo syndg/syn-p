@@ -1897,16 +1897,16 @@ export class StatusLineComponent implements Component {
 	 *   composer's frameless full-width top row.
 	 * - `plain-full`: no background, no powerline caps, dot separators, gap is
 	 *   plain spaces — the standalone bottom bar for pi/borderless composers.
-	 * - `plain-left`: left segments only (claude composer; the right group
-	 *   lives in the editor's top rule).
-	 * - `plain-right`: right segments only (claude composer's top rule).
+	 * - `plain-bottom`: left segments plus bottom-pinned right segments (claude
+	 *   composer); the remaining right group lives in the editor's top rule.
+	 * - `plain-right`: non-bottom-pinned right segments only (claude top rule).
 	 *
 	 * `previewTitle` is a stand-in session title for composer previews; the
 	 * `session_name` segment renders it when the session is unnamed.
 	 */
 	#buildStatusLine(
 		width: number,
-		layout: "box" | "band" | "plain-full" | "plain-left" | "plain-right" = "box",
+		layout: "box" | "band" | "plain-full" | "plain-bottom" | "plain-right" = "box",
 		previewTitle?: string,
 	): string {
 		const effectiveSettings = this.#resolveSettings();
@@ -1940,7 +1940,7 @@ export class StatusLineComponent implements Component {
 		const themeBgAnsi = theme.getBgAnsi("statusLineBg");
 		// Plain bottom bars drop the background entirely; the claude top-rule
 		// chip (`plain-right`) keeps it so the group reads as a chip on the rule.
-		const transparentLayout = layout === "plain-full" || layout === "plain-left";
+		const transparentLayout = layout === "plain-full" || layout === "plain-bottom";
 		const bgAnsi = transparentLayout || effectiveSettings.transparent ? TRANSPARENT_BG_ANSI : themeBgAnsi;
 		const transparentBg = bgAnsi === TRANSPARENT_BG_ANSI;
 		const fgAnsi = theme.getFgAnsi("text");
@@ -1964,7 +1964,12 @@ export class StatusLineComponent implements Component {
 
 		const rightParts: string[] = [];
 		const rightSegIds: StatusLineSegmentId[] = [];
-		const rightSegmentIds = layout === "plain-left" ? [] : effectiveSettings.rightSegments;
+		const rightSegmentIds =
+			layout === "plain-bottom"
+				? effectiveSettings.rightSegments.filter(id => id === "codex_weekly")
+				: layout === "plain-right"
+					? effectiveSettings.rightSegments.filter(id => id !== "codex_weekly")
+					: effectiveSettings.rightSegments;
 		for (const segId of rightSegmentIds) {
 			if (subagentBadge && segId === "subagents") continue;
 			if (layout === "band" && segId === "session_name") continue;
@@ -1988,7 +1993,7 @@ export class StatusLineComponent implements Component {
 			removeContextSegments(rightParts, rightSegIds);
 		}
 
-		if (layout !== "plain-left") {
+		if (layout !== "plain-bottom") {
 			// Count task jobs only until their AgentRegistry ref appears. Once it is
 			// running, the subagent badge represents that same agent; bash and eval
 			// jobs always remain independent background work.
@@ -2376,7 +2381,7 @@ export class StatusLineComponent implements Component {
 	 */
 	renderBottomBar(width: number, groups: "left" | "full", previewTitle?: string): string {
 		return this.#dimWhileFocusProxied(
-			this.#buildStatusLine(width, groups === "left" ? "plain-left" : "plain-full", previewTitle),
+			this.#buildStatusLine(width, groups === "left" ? "plain-bottom" : "plain-full", previewTitle),
 		);
 	}
 	/**

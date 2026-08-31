@@ -486,9 +486,21 @@ export class TranscriptContainer extends Container {
 		return rows.length > cap ? rows.slice(rows.length - cap) : rows;
 	}
 
+	/** Full semantic render that advances finalized blocks without retiring them. */
+	renderFullscreen(width: number, frame: AnimationFrame): readonly string[] {
+		this.#lastFrame = frame;
+		this.#syncEntries();
+		this.#settleFinalized();
+		return this.#renderAll(width);
+	}
+
 	/** Full semantic render used by exports and non-terminal commands. */
 	override render(width: number): readonly string[] {
 		this.#syncEntries();
+		return this.#renderAll(width);
+	}
+
+	#renderAll(width: number): readonly string[] {
 		const rows: string[] = [];
 		for (const entry of this.#entries) {
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);

@@ -33,9 +33,12 @@ describe("parseSgrMouse", () => {
 		expect(event?.leftClick).toBe(false);
 	});
 
-	it("decodes wheel direction from the low button bit", () => {
+	it("decodes only vertical wheel press reports", () => {
 		expect(parseSgrMouse("\x1b[<64;1;1M")?.wheel).toBe(-1);
 		expect(parseSgrMouse("\x1b[<65;1;1M")?.wheel).toBe(1);
+		expect(parseSgrMouse("\x1b[<66;1;1M")?.wheel).toBeNull();
+		expect(parseSgrMouse("\x1b[<67;1;1M")?.wheel).toBeNull();
+		expect(parseSgrMouse("\x1b[<64;1;1m")?.wheel).toBeNull();
 		expect(parseSgrMouse("\x1b[<65;1;1M")?.leftClick).toBe(false);
 	});
 

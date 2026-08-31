@@ -152,6 +152,7 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | Flag | Description |
 | --- | --- |
 | `--mode <mode>` | Output/transport mode: `text` (default), `json`, `rpc`, `acp`, or `rpc-ui`. See [output modes](#output-modes---mode). |
+| `--tui-mode <mode>` | Terminal UI mode for this run: `regular` or `fullscreen`. This overrides `tui.mode` without saving it. |
 
 #### Information
 

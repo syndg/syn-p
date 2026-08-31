@@ -260,6 +260,7 @@ export type StatusLineSegmentId =
 	| "cache_hit"
 	| "session_name"
 	| "usage"
+	| "codex_weekly"
 	| "collab";
 
 /** Submenu choice metadata. */
@@ -1142,6 +1143,70 @@ export const SETTINGS_SCHEMA = {
 		description:
 			"Maximum number of inline images kept as live terminal graphics (default 8). Older images fall back to a text placeholder via a full redraw once the limit is exceeded. Set to 0 to keep every image (no limit).",
 	},
+	"tui.mode": {
+		type: "enum",
+		values: ["regular", "fullscreen"] as const,
+		default: "regular",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "TUI Mode",
+			description: "Use native terminal scrollback or a fixed fullscreen transcript viewport",
+			options: [
+				{ value: "regular", label: "Regular", description: "Keep transcript rows in native terminal scrollback" },
+				{
+					value: "fullscreen",
+					label: "Fullscreen",
+					description: "Keep the composer fixed and scroll inside the app",
+				},
+			],
+		},
+	},
+	"tui.fullscreenScrollbar": {
+		type: "enum",
+		values: ["auto", "always", "hidden"] as const,
+		default: "auto",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Fullscreen Scrollbar",
+			description: "When the fullscreen transcript shows its transient scroll-position thumb",
+		},
+	},
+	"tui.fullscreenCopyOnSelect": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Copy Fullscreen Selection",
+			description: "Copy selected transcript text to the clipboard when the mouse is released",
+		},
+	},
+	"tui.fullscreenExitOutput": {
+		type: "enum",
+		values: ["transcript", "resume-hint"] as const,
+		default: "transcript",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Fullscreen Exit Output",
+			description: "Print the session transcript on exit or leave only the normal resume hint",
+			options: [
+				{
+					value: "transcript",
+					label: "Transcript",
+					description: "Write unretired transcript rows before returning to the shell",
+				},
+				{
+					value: "resume-hint",
+					label: "Resume Hint",
+					description: "Restore the shell without printing transcript rows",
+				},
+			],
+		},
+	},
+
 	"tui.resizeScrollback": {
 		type: "enum",
 		values: ["append", "rebuild", "preserve"] as const,

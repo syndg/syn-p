@@ -46,6 +46,12 @@ class CountingTerminal extends VirtualTerminal {
 	}
 }
 
+class ShellHandoffTerminal extends CountingTerminal {
+	override async drainInput(): Promise<void> {
+		this.writes.push("<drain-input>");
+	}
+}
+
 const scheduler = {
 	now: () => 0,
 	scheduleImmediate(callback: () => void) {
@@ -57,6 +63,7 @@ const scheduler = {
 		return { cancel() {} };
 	},
 };
+
 class ResizeScheduler {
 	#now = 0;
 	#pending = new Set<() => void>();
@@ -275,6 +282,192 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("keeps provider history pending while primary fullscreen owns the alternate buffer", () => {
+		const terminal = new VirtualTerminal(24, 4);
+		const provider = new Provider({
+			history: { id: 1, rows: ["committed history"] },
+			viewport: ["fullscreen transcript", "editor"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setPrimaryFullscreen(true);
+		tui.setFrameProvider(provider);
+
+		expect(provider.acknowledged).toEqual([]);
+		expect(terminal.getBufferPosition().baseY).toBe(0);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["fullscreen transcript", "editor", "", ""]);
+
+		provider.plan = {
+			history: { id: 1, rows: ["committed history"] },
+			viewport: ["new transcript tail", "editor"],
+		};
+		tui.requestRender(true);
+		expect(provider.acknowledged).toEqual([]);
+		expect(terminal.getViewport()[0]?.trimEnd()).toBe("new transcript tail");
+
+		const overlay = tui.showOverlay(new FullscreenOverlay(), { fullscreen: true });
+		expect(terminal.getViewport().some(row => row.includes("fullscreen overlay"))).toBe(true);
+		expect(provider.acknowledged).toEqual([]);
+		overlay.hide();
+		expect(terminal.getViewport()[0]?.trimEnd()).toBe("new transcript tail");
+
+		tui.setPrimaryFullscreen(false);
+		expect(provider.acknowledged).toEqual([1]);
+		expect(plainBuffer(terminal)).toContain("committed history");
+		tui.stop();
+	});
+
+	it("leaves fullscreen before draining the main-screen keyboard protocol", async () => {
+		const terminal = new ShellHandoffTerminal(24, 4);
+		const provider = new Provider({ viewport: ["fullscreen transcript", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setPrimaryFullscreen(true);
+		tui.setFrameProvider(provider);
+		terminal.writes.length = 0;
+
+		await tui.prepareForShellHandoff(1000);
+
+		const handoff = terminal.writes.join("");
+		const altPop = handoff.indexOf("\x1b[<u");
+		const altExit = handoff.indexOf("\x1b[?1049l");
+		const inputDrain = handoff.indexOf("<drain-input>");
+		expect(altPop).toBeGreaterThanOrEqual(0);
+		expect(altPop).toBeLessThan(altExit);
+		expect(altExit).toBeLessThan(inputDrain);
+
+		terminal.writes.length = 0;
+		tui.stop();
+		expect(terminal.writes.join("")).not.toContain("\x1b[?1049l");
+	});
+
+	it("rewrites only changed rows in primary fullscreen", () => {
+		const terminal = new CountingTerminal(24, 4);
+		const provider = new Provider({ viewport: ["one", "two", "three", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setPrimaryFullscreen(true);
+		tui.setFrameProvider(provider);
+		terminal.writes.length = 0;
+
+		provider.plan = { viewport: ["one", "changed", "three", "editor"] };
+		tui.requestRender();
+
+		const paint = terminal.writes.join("");
+		expect(paint).toContain("\x1b[2;1H");
+		expect(paint).not.toContain("\r\n");
+		tui.stop();
+	});
+
+	it("explicitly erases fixed-overlay rows before repaint", () => {
+		const terminal = new CountingTerminal(24, 4);
+		const provider = new Provider({ viewport: ["one", "overlay", "three", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setPrimaryFullscreen(true);
+		tui.setFrameProvider(provider);
+		terminal.writes.length = 0;
+
+		provider.plan = {
+			viewport: ["one", "overlay", "three", "editor"],
+			forceClearRows: [1],
+		};
+		tui.requestRender();
+
+		const paint = terminal.writes.join("");
+		expect(paint).toContain("\x1b[2;1H\x1b[0m\x1b[2K");
+		expect(terminal.getViewport()[1]?.trimEnd()).toBe("overlay");
+		tui.stop();
+	});
+
+	it("leaves a fixed control untouched during isolated transcript scrolling", () => {
+		const terminal = new CountingTerminal(24, 5);
+		const provider = new Provider({ viewport: ["two", "three", "four", "Jump to bottom", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setPrimaryFullscreen(true);
+		tui.setFrameProvider(provider);
+		terminal.writes.length = 0;
+
+		tui.hintPrimaryFullscreenScroll(-1, 0, 2);
+		provider.plan = { viewport: ["one", "two", "three", "Jump to bottom", "editor"] };
+		tui.requestRender();
+
+		const paint = terminal.writes.join("");
+		expect(paint).not.toContain("\x1b[1;3r");
+		expect(paint).not.toContain("\x1b[1T");
+		expect(paint).not.toContain("Jump to bottom");
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([
+			"one",
+			"two",
+			"three",
+			"Jump to bottom",
+			"editor",
+		]);
+		tui.stop();
+	});
+
+	it("repaints isolated one-row scrolling without terminal movement", () => {
+		const terminal = new CountingTerminal(24, 5);
+		const provider = new Provider({ viewport: ["one │", "two █", "three │", "four │", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setPrimaryFullscreen(true);
+		tui.setFrameProvider(provider);
+		terminal.writes.length = 0;
+
+		tui.hintPrimaryFullscreenScroll(1, 0, 3);
+		provider.plan = { viewport: ["two │", "three █", "four │", "five │", "editor"] };
+		tui.requestRender();
+
+		const paint = terminal.writes.join("");
+		expect(paint).not.toContain("\x1b[1;4r");
+		expect(paint).not.toContain("\x1b[1S");
+		expect(paint).toContain("five");
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([
+			"two │",
+			"three █",
+			"four │",
+			"five │",
+			"editor",
+		]);
+
+		tui.stop();
+	});
+
+	it("repaints isolated reverse scrolling without terminal movement", () => {
+		const terminal = new CountingTerminal(24, 5);
+		const provider = new Provider({ viewport: ["two │", "three █", "four │", "five │", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setPrimaryFullscreen(true);
+		tui.setFrameProvider(provider);
+		terminal.writes.length = 0;
+
+		tui.hintPrimaryFullscreenScroll(-1, 0, 3);
+		provider.plan = { viewport: ["one │", "two █", "three │", "four │", "editor"] };
+		tui.requestRender();
+
+		const paint = terminal.writes.join("");
+		expect(paint).not.toContain("\x1b[1;4r");
+		expect(paint).not.toContain("\x1b[1T");
+		expect(paint).toContain("one");
+		tui.stop();
+	});
+	it("coalesces overlay-free fullscreen deltas into one accelerated scroll", () => {
+		const terminal = new CountingTerminal(24, 7);
+		const provider = new Provider({ viewport: ["one", "two", "three", "four", "five", "six", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setPrimaryFullscreen(true);
+		tui.setFrameProvider(provider);
+		terminal.writes.length = 0;
+
+		tui.hintPrimaryFullscreenScroll(1, 0, 5);
+		tui.hintPrimaryFullscreenScroll(1, 0, 5);
+		tui.hintPrimaryFullscreenScroll(1, 0, 5);
+		provider.plan = { viewport: ["four", "five", "six", "seven", "eight", "nine", "editor"] };
+		tui.requestRender();
+
+		const paint = terminal.writes.join("");
+		expect(paint).toContain("\x1b[1;6r");
+		expect(paint).toContain("\x1b[3S");
+		expect(paint).not.toContain("four");
+		expect(paint).toContain("nine");
+		tui.stop();
+	});
 	it("flushes every eligible history batch before terminal handoff", () => {
 		const terminal = new VirtualTerminal(20, 3);
 		const provider = new FlushProvider();

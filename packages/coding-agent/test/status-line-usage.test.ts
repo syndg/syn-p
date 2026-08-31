@@ -40,9 +40,12 @@ function makeComponent(
 				premiumRequests: 0,
 				cost: 0,
 			}),
+			getSessionName: () => undefined,
 		},
+		isFastModeActive: () => false,
 		fetchUsageReports: async () => reports,
 		modelRegistry: {
+			isUsingOAuth: () => true,
 			authStorage: {
 				getOAuthAccountIdentity: (provider: string) =>
 					provider === options.provider ? options.activeIdentity : undefined,
@@ -112,6 +115,60 @@ describe("usage status-line segment", () => {
 		expect(content).toContain("24%");
 		expect(content).toContain("7d");
 		expect(content).toContain("8%");
+	});
+
+	it("shows Codex weekly quota remaining at the default bottom right", async () => {
+		const now = Date.now();
+		const component = makeComponent(
+			[
+				{
+					provider: "openai-codex",
+					metadata: { accountId: "account-1" },
+					limits: [
+						{
+							scope: { provider: "openai-codex", accountId: "account-1", windowId: "7d" },
+							window: { resetsAt: now + 141 * 3_600_000 },
+							amount: { usedFraction: 0.08 },
+						},
+					],
+				},
+			],
+			{
+				provider: "openai-codex",
+				modelId: "gpt-5.3-codex",
+				activeIdentity: { accountId: "account-1" },
+			},
+		);
+		component.updateSettings({ preset: "default", sessionAccent: false });
+
+		component.refreshUsageInBackground();
+		await flushUsageRefresh();
+		const bottom = stripVTControlCharacters(component.renderBottomBar(200, "left"));
+		const top = stripVTControlCharacters(component.getStandaloneTopBorder(200).content);
+
+		expect(bottom.trimEnd()).toEndWith("92% left (5d 21h)");
+		expect(bottom).not.toContain("Codex");
+		expect(top).not.toContain("% left");
+	});
+
+	it("hides the weekly remainder outside OpenAI Codex", () => {
+		const nonCodex = renderSegment("codex_weekly", {
+			session: {
+				state: { model: { provider: "anthropic" } },
+				model: { provider: "anthropic" },
+			},
+			usage: { sevenDay: { percent: 8 } },
+		} as unknown as SegmentContext);
+		const missingWeekly = renderSegment("codex_weekly", {
+			session: {
+				state: { model: { provider: "openai-codex" } },
+				model: { provider: "openai-codex" },
+			},
+			usage: null,
+		} as unknown as SegmentContext);
+
+		expect(nonCodex.visible).toBe(false);
+		expect(missingWeekly.visible).toBe(false);
 	});
 
 	it("selects one coherent scope for the active model", async () => {

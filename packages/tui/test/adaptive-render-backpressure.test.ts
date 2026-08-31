@@ -22,6 +22,7 @@ import { type Component, type RenderTimer, TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
 const MIN_RENDER_INTERVAL_MS = 1000 / 30;
+const INTERACTIVE_RENDER_INTERVAL_MS = 1000 / 60;
 const MAX_ADAPTIVE_RENDER_MS = 200;
 
 class ScriptedFrameCost implements Component {
@@ -168,6 +169,81 @@ describe("TUI adaptive render backpressure (#4145)", () => {
 			const delay = stepRender(scheduler);
 			expect(delay).not.toBeNull();
 			expect(delay!).toBeLessThanOrEqual(MAX_ADAPTIVE_RENDER_MS);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("schedules latency-sensitive viewport input at 60 fps without adaptive delay", () => {
+		const term = new VirtualTerminal(20, 4);
+		const scheduler = new DeferredRenderScheduler();
+		const probe = new ScriptedFrameCost();
+		probe.scheduler = scheduler;
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.addChild(probe);
+
+		try {
+			tui.start();
+			stepRender(scheduler);
+			scheduler.timers.length = 0;
+
+			tui.requestRender(false, { interactive: true });
+			const delay = stepRender(scheduler);
+
+			expect(delay).not.toBeNull();
+			expect(delay!).toBeLessThanOrEqual(INTERACTIVE_RENDER_INTERVAL_MS + 1);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("preempts an already queued ordinary frame for viewport input", () => {
+		const term = new VirtualTerminal(20, 4);
+		const scheduler = new DeferredRenderScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+
+		try {
+			tui.start();
+			stepRender(scheduler);
+			scheduler.timers.length = 0;
+
+			tui.requestRender();
+			while (scheduler.immediates.length > 0) scheduler.immediates.shift()!();
+			const ordinary = scheduler.timers.shift();
+			expect(ordinary).toBeDefined();
+
+			tui.requestRender(false, { interactive: true });
+			while (scheduler.immediates.length > 0) scheduler.immediates.shift()!();
+			const interactive = scheduler.timers.shift();
+
+			expect(ordinary!.canceled).toBe(true);
+			expect(interactive?.delayMs).toBeLessThanOrEqual(INTERACTIVE_RENDER_INTERVAL_MS + 1);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("does not postpone a pending interactive frame during continuous input", () => {
+		const term = new VirtualTerminal(20, 4);
+		const scheduler = new DeferredRenderScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+
+		try {
+			tui.start();
+			stepRender(scheduler);
+			scheduler.timers.length = 0;
+
+			tui.requestRender(false, { interactive: true });
+			while (scheduler.immediates.length > 0) scheduler.immediates.shift()!();
+			const deadline = scheduler.timers[0];
+			expect(deadline).toBeDefined();
+
+			scheduler.nowMs += 5;
+			tui.requestRender(false, { interactive: true });
+			while (scheduler.immediates.length > 0) scheduler.immediates.shift()!();
+
+			expect(deadline!.canceled).toBe(false);
+			expect(scheduler.timers.filter(timer => !timer.canceled)).toEqual([deadline!]);
 		} finally {
 			tui.stop();
 		}

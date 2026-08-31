@@ -125,6 +125,14 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 			result.mode = value;
 		}
 	},
+	"--tui-mode": (result, value) => {
+		if (value !== "regular" && value !== "fullscreen") {
+			throw new CliUsageError(
+				`Invalid --tui-mode value: ${JSON.stringify(value)}. Expected one of: regular, fullscreen.`,
+			);
+		}
+		result.tuiMode = value;
+	},
 	"--fork": (result, value) => {
 		result.fork = value;
 	},

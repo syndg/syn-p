@@ -6,7 +6,7 @@ import type { LspServerInfo, RecentSession } from "./components/welcome";
 import type { ComposerPreferences } from "./composer";
 import type { SymbolPreset } from "./theme/theme";
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 /** Theme inputs cached from the last resolved settings load for stable prepaint colors. */
 export interface ComposerThemePreferences {
 	readonly symbolPreset?: SymbolPreset;
@@ -144,6 +144,10 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 	const showHardwareCursor = field(rawPreferences, "showHardwareCursor");
 	const maxInlineImages = field(rawPreferences, "maxInlineImages");
 	const resizeScrollback = field(rawPreferences, "resizeScrollback");
+	const tuiMode = field(rawPreferences, "tuiMode");
+	const fullscreenScrollbar = field(rawPreferences, "fullscreenScrollbar");
+	const fullscreenCopyOnSelect = field(rawPreferences, "fullscreenCopyOnSelect");
+	const fullscreenExitOutput = field(rawPreferences, "fullscreenExitOutput");
 	const imeSafeCursor = field(rawPreferences, "imeSafeCursor");
 	const autocompleteMaxVisible = field(rawPreferences, "autocompleteMaxVisible");
 	const spellingTypoDetection = field(rawPreferences, "spellingTypoDetection");
@@ -158,6 +162,10 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 			resizeScrollback !== "append" &&
 			resizeScrollback !== "rebuild" &&
 			resizeScrollback !== "preserve") ||
+		(tuiMode !== "regular" && tuiMode !== "fullscreen") ||
+		(fullscreenScrollbar !== "auto" && fullscreenScrollbar !== "always" && fullscreenScrollbar !== "hidden") ||
+		typeof fullscreenCopyOnSelect !== "boolean" ||
+		(fullscreenExitOutput !== "transcript" && fullscreenExitOutput !== "resume-hint") ||
 		typeof imeSafeCursor !== "boolean" ||
 		typeof autocompleteMaxVisible !== "number" ||
 		typeof spellingTypoDetection !== "boolean" ||
@@ -191,6 +199,10 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 				resizeScrollback === "append" || resizeScrollback === "rebuild" || resizeScrollback === "preserve"
 					? resizeScrollback
 					: "rebuild",
+			tuiMode,
+			fullscreenScrollbar,
+			fullscreenCopyOnSelect,
+			fullscreenExitOutput,
 			imeSafeCursor,
 			autocompleteMaxVisible,
 			spellingTypoDetection,

@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added fullscreen TUI mode with a fixed composer, padded transcript content, non-debounced 60 fps scrolling, atomic row repaint for isolated trackpad reports, bounded terminal movement for coalesced reports, a jump-to-bottom row isolated from the transcript, boundary no-ops, mouse selection and URL clicks, configurable scrollbars, and selectable exit output.
+- Added a bottom-right Codex weekly quota remainder to the default status line; it appears only for an active `openai-codex` model with weekly usage data.
 - Added provider-reported credits and concrete routed-model counts to `/session` statistics ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
 - Added `CLINE_API_KEY` to the CLI environment help for native ClinePass subscription inference ([#7863](https://github.com/can1357/oh-my-pi/pull/7863) by [@will-bogusz](https://github.com/will-bogusz)).
 - Devin model selectors now accept the native CLI's short aliases (`devin/opus`, `devin/swe`), dotted upstream spellings (`devin/gemini-3.7-flash`), and raw effort-route wire uids for dynamically collapsed families ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
@@ -13,9 +15,13 @@
 ### Changed
 
 - Disabled `hashline` edit mode for Kimi, Mimo, DeepSeek Flash, and Stepfun models for stability
+- Refined the weekly Codex quota status to show remaining percentage and an hour-precise reset countdown without the redundant provider and window labels.
 
 ### Fixed
 
+- Fixed background-colored user-message bands visually erasing the fullscreen jump-to-bottom control while scrolling; the adjacent fixed row now repaints as the band crosses it.
+- Fixed the persistent fullscreen scrollbar rail carving a stepped right edge into background-colored message bands; auto mode now follows Syn Pi’s transient, thumb-only behavior and disappears after scroll activity.
+- Fixed crooked user-message backgrounds in fullscreen cmux by stripping OSC 133 shell zones at the fullscreen layout boundary, matching Syn Pi while retaining shell integration in regular mode.
 - Fixed an issue where custom model overrides were lost during configuration updates
 - Fixed "Please use nerdfont" notification incorrectly persisting after theme configuration
 - Fixed sampling parameter errors for newer Anthropic models (Opus 4.7+, Sonnet 5+)

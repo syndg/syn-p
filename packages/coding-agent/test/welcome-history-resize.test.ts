@@ -329,4 +329,50 @@ describe("composer welcome native-history resize", () => {
 		expect(transcript.blockStates()).toEqual(["committed"]);
 		expect(plainBuffer(terminal)).toContain("block-1@40");
 	});
+
+	it("restores and prints the fullscreen transcript before shutdown", async () => {
+		const terminal = new VirtualTerminal(40, 10);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			tuiOptions: { renderScheduler: scheduler },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true, tuiMode: "fullscreen" },
+		});
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new WidthTranscriptBlock(1));
+		composer.setRuntimeChildren([transcript, new MutableComposerTail()]);
+		composer.start({ playWelcomeIntro: false });
+		await scheduler.settle(terminal);
+
+		expect(transcript.blockStates()).toEqual(["settled"]);
+		composer.stop();
+
+		expect(transcript.blockStates()).toEqual(["committed"]);
+		expect(plainBuffer(terminal)).toContain("block-1@40");
+	});
+
+	it("restores fullscreen without printing transcript when exit output is resume-hint", async () => {
+		const terminal = new VirtualTerminal(40, 10);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			tuiOptions: { renderScheduler: scheduler },
+			preferences: {
+				...COMPOSER_DEFAULTS,
+				quiet: true,
+				tuiMode: "fullscreen",
+				fullscreenExitOutput: "resume-hint",
+			},
+		});
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new WidthTranscriptBlock(1));
+		composer.setRuntimeChildren([transcript, new MutableComposerTail()]);
+		composer.start({ playWelcomeIntro: false });
+		await scheduler.settle(terminal);
+
+		composer.stop();
+
+		expect(transcript.blockStates()).toEqual(["settled"]);
+		expect(plainBuffer(terminal)).not.toContain("block-1@40");
+	});
 });

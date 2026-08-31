@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed fullscreen shutdown leaving Kitty keyboard reporting active in the parent shell, which could switch vi-mode prompts into command mode.
+- Fixed horizontal SGR wheel reports from trackpads being decoded as vertical down-scroll events.
+
 ## [18.0.11] - 2026-08-29
 
 ### Added

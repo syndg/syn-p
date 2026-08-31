@@ -631,6 +631,12 @@ export class SelectorController {
 			case "tui.resizeScrollback":
 				this.ctx.ui.setResizeScrollback(value as ResizeScrollbackMode);
 				break;
+			case "tui.mode":
+			case "tui.fullscreenScrollbar":
+			case "tui.fullscreenCopyOnSelect":
+			case "tui.fullscreenExitOutput":
+				this.ctx.syncFullscreenPreferences();
+				break;
 
 			case "tui.renderMermaid":
 				setMarkdownMermaidRendering(value as boolean);

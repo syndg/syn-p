@@ -429,7 +429,9 @@ export interface Terminal {
 
 	/**
 	 * Drain stdin before exiting to prevent Kitty key release events from
-	 * leaking to the parent shell over slow SSH connections.
+	 * leaking to the parent shell over slow connections. When a TUI owns the
+	 * alternate screen, call `TUI.prepareForShellHandoff()` instead so its
+	 * screen-local keyboard frame is popped before this drains the main frame.
 	 * @param maxMs - Maximum time to drain (default: 1000ms)
 	 * @param idleMs - Exit early if no input arrives within this time (default: 50ms)
 	 */

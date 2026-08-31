@@ -127,6 +127,10 @@ export interface HistoryBatch {
 export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
 	readonly viewport: readonly string[];
+	/** Viewport-relative rows containing fixed overlays. These rows are erased
+	 * before repaint even when their logical text compares equal, preventing a
+	 * terminal-retained copy when dock geometry moves the overlay. */
+	readonly forceClearRows?: readonly number[];
 }
 
 /** Produces bounded terminal frames and retires acknowledged history batches. */
@@ -264,6 +268,8 @@ export interface Focusable {
 export interface RenderRequestOptions {
 	/** Clear terminal scrollback for intentional transcript replacement. */
 	clearScrollback?: boolean;
+	/** Prioritize direct viewport interaction at a 60 fps cadence. */
+	interactive?: boolean;
 }
 /**
  * Controls how a settled terminal resize refreshes native history.
@@ -725,6 +731,7 @@ export class TUI extends Container {
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	onDebug?: () => void;
 	#renderRequested = false;
+	#interactiveRenderRequested = false;
 	#renderTimer: RenderTimer | undefined;
 	#renderScheduler: RenderScheduler;
 	#lastRenderAt = 0;
@@ -738,6 +745,8 @@ export class TUI extends Container {
 	 */
 	#lastFrameCostMs = 0;
 	static readonly #MIN_RENDER_INTERVAL_MS = 1000 / 30;
+	static readonly #INTERACTIVE_RENDER_INTERVAL_MS = 1000 / 60;
+	static readonly #MIN_ACCELERATED_SCROLL_ROWS = 2;
 	static readonly #INPUT_RENDER_GRACE_MS = TUI.#MIN_RENDER_INTERVAL_MS;
 	/**
 	 * Cap on the adaptive floor derived from `#lastFrameCostMs`. Bounds the UI
@@ -802,14 +811,16 @@ export class TUI extends Container {
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
 	#watchdog: LoopWatchdog;
 
-	// Transient alternate-screen state for a fullscreen overlay. While active, the
-	// engine paints only the modal on the alt buffer and leaves every
-	// normal-screen accounting field (#previousFrameLength, #viewportTopRow, …)
-	// untouched, so exiting reconciles cleanly against the terminal-restored
-	// normal screen. #altPreviousLines is the last alt frame, for repaint-skip.
+	// Alternate-screen state for fullscreen overlays and an optional
+	// application-owned primary fullscreen frame. Normal-screen accounting
+	// (#previousFrameLength, #viewportTopRow, …) stays untouched while active,
+	// so exiting reconciles against the terminal-restored normal screen.
 	#altActive = false;
+	#primaryFullscreen = false;
 	#altMouseTrackingActive = false;
 	#altPreviousLines: string[] = [];
+	#altPreviousWidth = 0;
+	#pendingPrimaryScroll: { delta: number; top: number; bottom: number } | undefined;
 	#altEnterWidth = 0;
 	#altEnterHeight = 0;
 	#resizeAltActive = false;
@@ -847,6 +858,34 @@ export class TUI extends Container {
 		this.#providerWindow = [];
 		this.#resizeReplaySize = undefined;
 		this.requestRender(true);
+	}
+
+	/**
+	 * Paint the frame provider as the alternate-screen base instead of committing
+	 * its history plan to native scrollback. Fullscreen overlays still composite
+	 * above that base and retain ownership of their mouse policy.
+	 */
+	setPrimaryFullscreen(enabled: boolean): void {
+		if (this.#primaryFullscreen === enabled) return;
+		this.#pendingPrimaryScroll = undefined;
+		this.#primaryFullscreen = enabled;
+		this.requestRender(true);
+	}
+
+	/**
+	 * Hint that the next primary-fullscreen frame moves a bounded row region by
+	 * `delta` rows. Positive deltas move existing cells up; negative deltas move
+	 * them down. The next paint validates the hint and repairs any changed cells.
+	 */
+	hintPrimaryFullscreenScroll(delta: number, top: number, bottom: number): void {
+		if (!this.#primaryFullscreen || !Number.isInteger(delta) || delta === 0) return;
+		const pending = this.#pendingPrimaryScroll;
+		if (pending?.top === top && pending.bottom === bottom) {
+			pending.delta += delta;
+			if (pending.delta === 0) this.#pendingPrimaryScroll = undefined;
+			return;
+		}
+		this.#pendingPrimaryScroll = { delta, top, bottom };
 	}
 
 	#syncTerminalCursorMode(component: Component | null): void {
@@ -1149,6 +1188,7 @@ export class TUI extends Container {
 	 * to keep the good stash.
 	 */
 	#beginResizeAltPaint(restartingProbe = false): void {
+		if (this.#stopped) return;
 		if (this.#altActive) {
 			this.requestRender(true);
 			return;
@@ -1614,12 +1654,22 @@ export class TUI extends Container {
 		}
 	}
 
-	stop(): void {
-		this.#debugServer?.stop();
-		this.#debugServer = undefined;
-		this.#resizeSettleTimer?.cancel();
-		this.#resizeSettleTimer = undefined;
+	/**
+	 * Freeze rendering, restore the normal screen, then drain terminal input.
+	 *
+	 * Enhanced keyboard modes are screen-local. The alternate-screen push must
+	 * be popped before {@link Terminal.drainInput} pops the main-screen push;
+	 * otherwise the parent shell inherits Kitty CSI-u and its leading Escape can
+	 * switch a vi-mode line editor into command mode.
+	 */
+	async prepareForShellHandoff(maxDrainMs = 1000): Promise<void> {
+		this.#stopped = true;
 		this.#cancelResizeProbe();
+		this.#leaveAlternateScreen();
+		await this.terminal.drainInput(maxDrainMs);
+	}
+
+	#leaveAlternateScreen(): void {
 		if (this.#resizeAltActive) {
 			this.#resizeAltActive = false;
 			this.terminal.write(`${this.#keyboardEnhancementExit()}\x1b[?1049l`);
@@ -1635,6 +1685,15 @@ export class TUI extends Container {
 			this.#altPreviousLines = [];
 			this.#pendingAltExit = "";
 		}
+	}
+
+	stop(): void {
+		this.#debugServer?.stop();
+		this.#debugServer = undefined;
+		this.#resizeSettleTimer?.cancel();
+		this.#resizeSettleTimer = undefined;
+		this.#cancelResizeProbe();
+		this.#leaveAlternateScreen();
 		// A latched destructive reset (settled rebuild-mode resize, /clear) pairs
 		// ED3 with a complete-ledger replay. Running that pair during stop would
 		// erase native history and re-stream the whole transcript at quit; drop
@@ -1701,6 +1760,7 @@ export class TUI extends Container {
 
 	requestRender(force = false, options?: RenderRequestOptions): void {
 		if (force) {
+			this.#interactiveRenderRequested = false;
 			this.#prepareForcedRender(options?.clearScrollback === true);
 			this.#renderRequested = true;
 			this.#renderScheduler.scheduleImmediate(() => {
@@ -1710,6 +1770,10 @@ export class TUI extends Container {
 				this.#renderRequested = false;
 				this.#executeRender();
 			});
+			return;
+		}
+		if (options?.interactive === true) {
+			this.#requestInteractiveRender();
 			return;
 		}
 		this.#requestOrdinaryRender();
@@ -1724,6 +1788,7 @@ export class TUI extends Container {
 		if (this.#stopped) return;
 		this.#prepareForcedRender(options?.clearScrollback === true);
 		this.#renderRequested = false;
+		this.#interactiveRenderRequested = false;
 		const start = this.#renderScheduler.now();
 		this.#lastRenderAt = start;
 		this.#doRender();
@@ -1746,6 +1811,25 @@ export class TUI extends Container {
 		if (this.#renderRequested) return;
 		this.#renderRequested = true;
 		this.#renderScheduler.scheduleImmediate(() => this.#scheduleRender());
+	}
+
+	/** Latency-sensitive viewport input preempts a queued ordinary frame. */
+	#requestInteractiveRender(): void {
+		if (this.#stopped) return;
+		const wasRequested = this.#renderRequested;
+		const alreadyInteractive = this.#interactiveRenderRequested;
+		this.#renderRequested = true;
+		this.#interactiveRenderRequested = true;
+		if (alreadyInteractive) return;
+
+		const timerWasPending = this.#renderTimer !== undefined;
+		if (this.#renderTimer) {
+			this.#renderTimer.cancel();
+			this.#renderTimer = undefined;
+		}
+		if (!wasRequested || timerWasPending) {
+			this.#renderScheduler.scheduleImmediate(() => this.#scheduleRender());
+		}
 	}
 
 	#maybeDeferGhosttyInitialImagePaint(): boolean {
@@ -1791,6 +1875,7 @@ export class TUI extends Container {
 			return;
 		}
 		this.#renderRequested = false;
+		this.#interactiveRenderRequested = false;
 		this.#executeRender();
 		if (this.#renderRequested) {
 			this.#scheduleRender();
@@ -1803,16 +1888,16 @@ export class TUI extends Container {
 		}
 		const now = this.#renderScheduler.now();
 		const elapsed = now - this.#lastRenderAt;
-		const cadenceDelay = Math.max(0, TUI.#MIN_RENDER_INTERVAL_MS - elapsed);
-		// Adaptive backpressure — target ~50% render duty cycle: the next frame
-		// starts no sooner than `last_frame_end + last_frame_cost`, i.e.
-		// `last_frame_start + 2 × last_frame_cost`. So `elapsed` (which counts
-		// from the last frame's start) must already exceed twice the cost
-		// before we allow the follow-up render to fire. Capped so a
-		// pathological one-off spike doesn't lock the UI (#4145).
-		const adaptiveFloor = Math.min(TUI.#MAX_ADAPTIVE_RENDER_MS, this.#lastFrameCostMs * 2);
-		const adaptiveDelay = Math.max(0, adaptiveFloor - elapsed);
-		const inputGraceDelay = Math.max(0, this.#inputRenderGraceUntilMs - now);
+		const interactive = this.#interactiveRenderRequested;
+		const cadence = interactive ? TUI.#INTERACTIVE_RENDER_INTERVAL_MS : TUI.#MIN_RENDER_INTERVAL_MS;
+		const cadenceDelay = Math.max(0, cadence - elapsed);
+		// Adaptive backpressure protects autonomous animations and streaming from
+		// expensive busy loops. Direct viewport input instead gets the same 60 fps
+		// cadence as Syn-Pi and is already bounded by one frame per scheduler tick.
+		const adaptiveDelay = interactive
+			? 0
+			: Math.max(0, Math.min(TUI.#MAX_ADAPTIVE_RENDER_MS, this.#lastFrameCostMs * 2) - elapsed);
+		const inputGraceDelay = interactive ? 0 : Math.max(0, this.#inputRenderGraceUntilMs - now);
 		const delay = Math.max(cadenceDelay, adaptiveDelay, inputGraceDelay);
 		this.#renderTimer = this.#renderScheduler.scheduleRender(this.#runScheduledRender, delay);
 	}
@@ -2558,12 +2643,14 @@ export class TUI extends Container {
 			return;
 		}
 
-		// Fullscreen alt-screen short-circuit. While the topmost visible overlay
-		// requests it, borrow the terminal's alternate buffer and paint only the
-		// modal there; the normal screen and all accounting stay untouched.
+		// Fullscreen alt-screen short-circuit. A fullscreen overlay borrows the
+		// buffer by itself; primary fullscreen paints the frame provider as the
+		// base and lets every visible overlay composite above it.
 		const topOverlay = this.#getTopmostVisibleOverlay();
-		const wantAlt = topOverlay?.options?.fullscreen === true;
-		const wantMouseTracking = wantAlt && topOverlay.options?.mouseTracking !== false;
+		const fullscreenOverlay = topOverlay?.options?.fullscreen === true;
+		const wantAlt = this.#primaryFullscreen || fullscreenOverlay;
+		const wantMouseTracking =
+			wantAlt && (fullscreenOverlay ? topOverlay.options?.mouseTracking !== false : this.#primaryFullscreen);
 		if (wantAlt && !this.#altActive) {
 			// Enhanced keyboard modes can be buffer-local: re-push the active
 			// modified-key reporting sequence on the freshly entered alternate
@@ -2578,6 +2665,7 @@ export class TUI extends Container {
 			this.#altActive = true;
 			this.#altMouseTrackingActive = wantMouseTracking;
 			this.#altPreviousLines = [];
+			this.#altPreviousWidth = 0;
 			this.#altEnterWidth = width;
 			this.#altEnterHeight = height;
 		} else if (!wantAlt && this.#altActive) {
@@ -2590,6 +2678,7 @@ export class TUI extends Container {
 			this.#altActive = false;
 			this.#altMouseTrackingActive = false;
 			this.#altPreviousLines = [];
+			this.#altPreviousWidth = 0;
 			// The alt-buffer restore put the pre-overlay normal screen back. If
 			// that buffer resized while covered, its cursor moved with width
 			// rewrap or a height-grow scrollback pull, while our viewport anchor
@@ -2917,27 +3006,71 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Compose and paint a single fullscreen overlay frame on the alt buffer.
-	 * Cursor markers are stripped (the modal draws its own in-band caret and
-	 * keeps the hardware cursor hidden), and only the modal is composited over a
-	 * blank base — the transcript is never touched while the alt buffer is up.
+	 * Compose and paint one alternate-screen frame. Primary fullscreen uses the
+	 * product frame provider as its base; standalone fullscreen overlays retain
+	 * their historical blank base. No history batch is acknowledged here.
 	 */
 	#renderAltFrame(width: number, height: number): void {
-		const base: string[] = new Array(Math.max(0, height)).fill("");
+		let base: string[];
+		let forceClearRows: readonly number[] = [];
+		if (this.#primaryFullscreen && this.#frameProvider !== undefined) {
+			this.#imageBudget.beginPass();
+			const plan = this.#frameProvider.renderFrame({ columns: width, rows: height });
+			this.#imageBudget.endPass();
+			const clippedRows = Math.max(0, plan.viewport.length - height);
+			base = clippedRows > 0 ? Array.from(plan.viewport.slice(clippedRows)) : Array.from(plan.viewport);
+			forceClearRows = (plan.forceClearRows ?? [])
+				.map(row => row - clippedRows)
+				.filter(row => row >= 0 && row < height);
+			while (base.length < height) base.push("");
+		} else {
+			base = new Array(Math.max(0, height)).fill("");
+		}
 		let lines = this.#compositeOverlaysIntoWindow(base, width, height);
-		this.#extractCursorMarkers(lines);
+		const markers = this.#extractCursorMarkers(lines);
 		lines = this.#prepareLinesArray(lines, width);
-		this.#emitAltFrame(lines, width, height);
+		this.#emitAltFrame(lines, width, height, markers, forceClearRows);
 	}
 
 	/**
-	 * Full per-row viewport rewrite on the alt buffer. Emits only sync-output
-	 * brackets, a cursor home, and per-row rewrites — never ED3 or any
-	 * native-scrollback byte. The hardware cursor stays hidden here.
+	 * Alternate-buffer viewport paint. Primary fullscreen updates only changed
+	 * rows once geometry is stable; forced paints and protocol-heavy rows use a
+	 * full rewrite. Neither path emits native-scrollback bytes.
 	 */
-	#emitAltFrame(lines: string[], width: number, height: number): void {
+
+	#validatePrimaryFullscreenScroll(
+		scroll: { delta: number; top: number; bottom: number } | undefined,
+		height: number,
+	): { delta: number; top: number; bottom: number } | undefined {
+		if (
+			scroll === undefined ||
+			!Number.isInteger(scroll.delta) ||
+			!Number.isInteger(scroll.top) ||
+			!Number.isInteger(scroll.bottom) ||
+			scroll.delta === 0 ||
+			scroll.top < 0 ||
+			scroll.bottom >= height ||
+			scroll.top >= scroll.bottom ||
+			Math.abs(scroll.delta) >= scroll.bottom - scroll.top + 1
+		) {
+			return undefined;
+		}
+		return scroll;
+	}
+	#emitAltFrame(
+		lines: string[],
+		width: number,
+		height: number,
+		markers: readonly { row: number; col: number }[] = [],
+		forceClearRows: readonly number[] = [],
+	): void {
 		const fitted: string[] = new Array(height);
 		for (let r = 0; r < height; r++) fitted[r] = lines[r] ?? "";
+		const marker = markers[0];
+		const target =
+			marker !== undefined && height > 0
+				? this.#targetHardwareCursorState({ row: Math.min(marker.row, height - 1), col: marker.col }, height)
+				: null;
 		// Flush queued image-data transmits (`a=t`, no visible output) before the
 		// paint so id-keyed placements and placeholder cells composed into this
 		// frame resolve against loaded data. The normal-screen path flushes these
@@ -2950,31 +3083,104 @@ export class TUI extends Container {
 			for (const seq of imageTransmits) transmitBuffer += seq;
 			this.terminal.write(transmitBuffer);
 		}
-		// Skip an identical repaint (the modal is mostly static between
-		// keystrokes) — unless a forced repaint (resetDisplay,
-		// requestRender(true)) is pending: the redraw gesture must repair a
-		// corrupted modal even when our cached frame is byte-identical.
 		const force = this.#forceViewportRepaintOnNextRender;
 		this.#forceViewportRepaintOnNextRender = false;
-		if (!force && this.#altPreviousLines.length === height) {
-			let same = true;
-			for (let r = 0; r < height; r++) {
-				if (fitted[r] !== this.#altPreviousLines[r]) {
-					same = false;
-					break;
-				}
+		const cursorSame = target
+			? this.#hardwareCursorState?.row === target.row &&
+				this.#hardwareCursorState.col === target.col &&
+				this.#hardwareCursorState.visible === target.visible
+			: this.#hardwareCursorState === null || !this.#hardwareCursorState.visible;
+		const hasProtocolRows =
+			fitted.some(line => TERMINAL.isImageLine(line) || isOsc66Line(line)) ||
+			this.#altPreviousLines.some(line => TERMINAL.isImageLine(line) || isOsc66Line(line));
+		const canDiff =
+			this.#primaryFullscreen &&
+			this.#altActive &&
+			!this.#resizeAltActive &&
+			!force &&
+			!hasProtocolRows &&
+			this.#altPreviousWidth === width &&
+			this.#altPreviousLines.length === height;
+		const hintedScroll = this.#pendingPrimaryScroll;
+		this.#pendingPrimaryScroll = undefined;
+		const candidateScroll = canDiff ? this.#validatePrimaryFullscreenScroll(hintedScroll, height) : undefined;
+		// Ghostty exposes isolated DECSTBM + CSI S/T movement as a brief reverse
+		// bounce. Repaint one-row trackpad reports atomically; once reports
+		// coalesce, bounded terminal scrolling wins enough write volume to use.
+		const scroll =
+			candidateScroll && Math.abs(candidateScroll.delta) >= TUI.#MIN_ACCELERATED_SCROLL_ROWS
+				? candidateScroll
+				: undefined;
+		let previous: readonly (string | undefined)[] = this.#altPreviousLines;
+		if (scroll) {
+			const shifted: (string | undefined)[] = [...this.#altPreviousLines];
+			const amount = Math.abs(scroll.delta);
+			for (let row = scroll.top; row <= scroll.bottom; row++) {
+				const source = scroll.delta > 0 ? row + amount : row - amount;
+				shifted[row] = source >= scroll.top && source <= scroll.bottom ? this.#altPreviousLines[source] : undefined;
 			}
-			if (same) return;
+			previous = shifted;
 		}
-		let buffer = `${this.#paintBeginSequence}\x1b[H`;
-		for (let r = 0; r < height; r++) {
-			if (r > 0) buffer += "\r\n";
-			buffer += this.#lineRewriteSequence(fitted[r], width, r, -1, -1, this.#osc66SpacerGlyphWidth(fitted, r));
+		const forcedRows = new Set(forceClearRows);
+		const changedRows: number[] = [];
+		if (canDiff) {
+			for (let row = 0; row < height; row++) {
+				if (forcedRows.has(row) || fitted[row] !== previous[row]) changedRows.push(row);
+			}
+		}
+		if (canDiff && scroll === undefined && changedRows.length === 0 && cursorSame) return;
+
+		let buffer = this.#paintBeginSequence;
+		if (canDiff) {
+			if (scroll) {
+				const amount = Math.abs(scroll.delta);
+				buffer += `\x1b[${scroll.top + 1};${scroll.bottom + 1}r`;
+				buffer += `\x1b[${scroll.top + 1};1H\x1b[${amount}${scroll.delta > 0 ? "S" : "T"}\x1b[r`;
+			}
+			for (const row of changedRows) {
+				buffer += `\x1b[${row + 1};1H`;
+				if (forcedRows.has(row)) buffer += SEGMENT_RESET + ERASE_LINE;
+				buffer += this.#lineRewriteSequence(
+					fitted[row] ?? "",
+					width,
+					row,
+					-1,
+					-1,
+					this.#osc66SpacerGlyphWidth(fitted, row),
+				);
+			}
+		} else {
+			buffer += "\x1b[H";
+			for (let row = 0; row < height; row++) {
+				if (row > 0) buffer += "\r\n";
+				if (forcedRows.has(row)) buffer += SEGMENT_RESET + ERASE_LINE;
+				buffer += this.#lineRewriteSequence(
+					fitted[row] ?? "",
+					width,
+					row,
+					-1,
+					-1,
+					this.#osc66SpacerGlyphWidth(fitted, row),
+				);
+			}
+		}
+		if (target) {
+			buffer += `\x1b[${target.row + 1};${target.col + 1}H${target.visible ? "\x1b[?25h" : "\x1b[?25l"}`;
+		} else {
+			buffer += "\x1b[?25l\x1b[H";
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
 		this.#altPreviousLines = fitted;
-		this.#debugPaint = { lines: fitted, windowTop: 0, altScreen: true };
-		this.#fullRedrawCount += 1;
+		this.#altPreviousWidth = width;
+		this.#debugPaint = {
+			lines: fitted,
+			windowTop: 0,
+			altScreen: true,
+			...(target === null ? {} : { cursor: { x: target.col, y: target.row, visible: target.visible } }),
+		};
+		if (target) this.#recordHardwareCursorState(target);
+		else this.#recordHardwareCursorHidden();
+		if (!canDiff) this.#fullRedrawCount += 1;
 	}
 }

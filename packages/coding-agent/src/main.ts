@@ -1505,6 +1505,9 @@ export async function runRootCommand(
 			// setup-time checks (e.g. #wrapToolForAcpPermission) also see the yolo intent.
 			settingsInstance.override("tools.approvalMode", "yolo");
 		}
+		if (parsedArgs.tuiMode !== undefined) {
+			settingsInstance.override("tui.mode", parsedArgs.tuiMode);
+		}
 		if (parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") {
 			applyRpcDefaultSettingOverrides(settingsInstance);
 		} else if (parsedArgs.mode === "acp") {
@@ -1580,6 +1583,10 @@ export async function runRootCommand(
 			showHardwareCursor: settingsInstance.get("showHardwareCursor"),
 			maxInlineImages: settingsInstance.get("tui.maxInlineImages"),
 			resizeScrollback: settingsInstance.get("tui.resizeScrollback"),
+			tuiMode: settingsInstance.get("tui.mode"),
+			fullscreenScrollbar: settingsInstance.get("tui.fullscreenScrollbar"),
+			fullscreenCopyOnSelect: settingsInstance.get("tui.fullscreenCopyOnSelect"),
+			fullscreenExitOutput: settingsInstance.get("tui.fullscreenExitOutput"),
 			imeSafeCursor: settingsInstance.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settingsInstance.get("autocompleteMaxVisible"),
 			spellingTypoDetection: settingsInstance.get("spelling.typoDetection"),

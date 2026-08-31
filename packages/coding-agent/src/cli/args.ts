@@ -57,6 +57,7 @@ export interface Args {
 	version?: boolean;
 	mode?: Mode;
 	noSession?: boolean;
+	tuiMode?: "regular" | "fullscreen";
 	sessionDir?: string;
 	providerSessionId?: string;
 	providerPromptCacheKey?: string;

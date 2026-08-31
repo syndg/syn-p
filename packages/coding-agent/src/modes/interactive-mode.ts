@@ -866,6 +866,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			showHardwareCursor: settings.get("showHardwareCursor"),
 			maxInlineImages: settings.get("tui.maxInlineImages"),
 			resizeScrollback: settings.get("tui.resizeScrollback"),
+			tuiMode: settings.get("tui.mode"),
+			fullscreenScrollbar: settings.get("tui.fullscreenScrollbar"),
+			fullscreenCopyOnSelect: settings.get("tui.fullscreenCopyOnSelect"),
+			fullscreenExitOutput: settings.get("tui.fullscreenExitOutput"),
 			imeSafeCursor: settings.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
 			spellingTypoDetection: settings.get("spelling.typoDetection"),
@@ -2116,6 +2120,15 @@ export class InteractiveMode implements InteractiveModeContext {
 			typoDetection: this.settings.get("spelling.typoDetection"),
 			autocomplete: this.settings.get("spelling.autocomplete"),
 			autocorrect: this.settings.get("spelling.autocorrect"),
+		});
+	}
+
+	syncFullscreenPreferences(): void {
+		this.composer.setPreferences({
+			tuiMode: this.settings.get("tui.mode"),
+			fullscreenScrollbar: this.settings.get("tui.fullscreenScrollbar"),
+			fullscreenCopyOnSelect: this.settings.get("tui.fullscreenCopyOnSelect"),
+			fullscreenExitOutput: this.settings.get("tui.fullscreenExitOutput"),
 		});
 	}
 
@@ -4829,11 +4842,12 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Do not force a final render during teardown: disposed session/UI state can
 		// collapse to an empty frame, clearing the viewport and leaving the parent
-		// shell prompt at row 0. Stop from the last committed frame so the terminal
-		// hands Bash the cursor immediately after visible OMP content.
-		// Drain any in-flight Kitty key release events before stopping.
-		// This prevents escape sequences from leaking to the parent shell over slow SSH.
-		await this.ui.terminal.drainInput(1000);
+		// shell prompt at row 0. Freeze rendering and leave fullscreen before
+		// draining input: Kitty keyboard flags are screen-local, so the alt-screen
+		// frame must be popped before the drain pops the main-screen frame. Reversing
+		// that order leaves CSI-u enabled in the shell, where its leading Escape
+		// switches vi-mode line editors into command mode.
+		await this.ui.prepareForShellHandoff(1000);
 		// Stop the run-state spinner interval BEFORE restoring the shell title, so a
 		// pending tick cannot re-emit an OSC title after `popTerminalTitle` hands the
 		// terminal back (which would leave the parent shell with a `π ⠋ …` tab).

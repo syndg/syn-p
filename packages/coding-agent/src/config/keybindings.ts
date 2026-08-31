@@ -23,6 +23,14 @@ interface AppKeybindings {
 	"app.exit": true;
 	"app.suspend": true;
 	"app.display.reset": true;
+	"app.transcript.pageUp": true;
+	"app.transcript.pageDown": true;
+	"app.transcript.halfPageUp": true;
+	"app.transcript.halfPageDown": true;
+	"app.transcript.lineUp": true;
+	"app.transcript.lineDown": true;
+	"app.transcript.top": true;
+	"app.transcript.bottom": true;
 	"app.thinking.cycle": true;
 	"app.thinking.toggle": true;
 	"app.model.cycleForward": true;
@@ -97,6 +105,38 @@ export const KEYBINDINGS = {
 	"app.display.reset": {
 		defaultKeys: "alt+l",
 		description: "Reset terminal display",
+	},
+	"app.transcript.pageUp": {
+		defaultKeys: "pageUp",
+		description: "Scroll fullscreen transcript up one page",
+	},
+	"app.transcript.pageDown": {
+		defaultKeys: "pageDown",
+		description: "Scroll fullscreen transcript down one page",
+	},
+	"app.transcript.halfPageUp": {
+		defaultKeys: [],
+		description: "Scroll fullscreen transcript up half a page",
+	},
+	"app.transcript.halfPageDown": {
+		defaultKeys: [],
+		description: "Scroll fullscreen transcript down half a page",
+	},
+	"app.transcript.lineUp": {
+		defaultKeys: [],
+		description: "Scroll fullscreen transcript up one line",
+	},
+	"app.transcript.lineDown": {
+		defaultKeys: [],
+		description: "Scroll fullscreen transcript down one line",
+	},
+	"app.transcript.top": {
+		defaultKeys: "home",
+		description: "Jump to the top of the fullscreen transcript",
+	},
+	"app.transcript.bottom": {
+		defaultKeys: "end",
+		description: "Jump to the bottom of the fullscreen transcript",
 	},
 	"app.thinking.cycle": {
 		defaultKeys: "shift+tab",

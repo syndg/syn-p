@@ -785,6 +785,22 @@ const usageSegment: StatusLineSegment = {
 	},
 };
 
+const codexWeeklySegment: StatusLineSegment = {
+	id: "codex_weekly",
+	render(ctx) {
+		const provider = ctx.session.state.model?.provider ?? ctx.session.model?.provider;
+		const weekly = ctx.usage?.sevenDay;
+		if (provider !== "openai-codex" || !weekly) {
+			return { content: "", visible: false };
+		}
+		const remaining = Math.max(0, Math.min(100, 100 - weekly.percent));
+		const percent = theme.fg(pickUsageColor(weekly.percent), `${Math.round(remaining)}%`);
+		const reset =
+			weekly.resetHours !== undefined ? theme.fg("muted", ` (${formatUsageReset(weekly.resetHours, "h")})`) : "";
+		return { content: `${percent} left${reset}`, visible: true };
+	},
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Segment Registry
 // ═══════════════════════════════════════════════════════════════════════════
@@ -813,6 +829,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	cache_hit: cacheHitSegment,
 	session_name: sessionNameSegment,
 	usage: usageSegment,
+	codex_weekly: codexWeeklySegment,
 	collab: collabSegment,
 };
 
