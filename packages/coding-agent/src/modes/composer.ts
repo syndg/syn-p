@@ -410,6 +410,7 @@ export class Composer implements TerminalFrameProvider {
 		chromeRows: number,
 	): { id: number; rows: readonly string[]; kind: "append" | "replay" } | undefined {
 		if (this.#offeredHistory !== undefined) {
+			this.#rerenderOfferedHistory(width);
 			return {
 				id: this.#offeredHistory.id,
 				rows: this.#offeredHistory.rows,
@@ -482,6 +483,25 @@ export class Composer implements TerminalFrameProvider {
 		};
 	}
 
+	#rerenderOfferedHistory(width: number): void {
+		const offered = this.#offeredHistory;
+		if (offered === undefined) return;
+		if (offered.source === "header") {
+			const rows = this.#header.render(width);
+			offered.rows = rows.length > 0 ? [...rows, ""] : [];
+			return;
+		}
+		const transcript = offered.source.transcript.rerenderOfferedBatch(width);
+		if (offered.source.header === "none") {
+			if (transcript !== undefined) offered.rows = transcript.rows;
+			return;
+		}
+		const recomposed = this.#header.render(width);
+		const headerRows = recomposed.length > 0 ? [...recomposed, ""] : this.#reflowRetiredHeader(width, 0);
+		offered.source.headerRows = headerRows;
+		offered.rows = [...headerRows, ...(transcript?.rows ?? [])];
+	}
+
 	#renderRoots(roots: readonly Component[], width: number): string[] {
 		const rows: string[] = [];
 		for (const root of roots) rows.push(...root.render(width));
@@ -538,7 +558,7 @@ export class Composer implements TerminalFrameProvider {
 				reflowed.push("");
 				continue;
 			}
-			for (let column = 0; column < lineWidth; ) {
+			for (let column = 0; column < lineWidth;) {
 				let slice = sliceWithWidth(line, column, columns, true);
 				if (slice.width === 0) slice = sliceWithWidth(line, column, columns);
 				reflowed.push(slice.text);
