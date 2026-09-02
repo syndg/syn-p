@@ -17,6 +17,9 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
 }
+function renderActivityDock(mode: InteractiveMode): string {
+	return Bun.stripANSI(mode.activityDockContainer.render(120).join("\n"));
+}
 
 describe("InteractiveMode todo HUD persistence", () => {
 	let tempDir: TempDir;
@@ -63,6 +66,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 	afterEach(() => {
 		session.setTodoPhases([]);
 		mode.setTodos([]);
+		if (mode.todoExpanded) mode.toggleTodoExpansion();
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 	});
@@ -201,6 +205,51 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 		vi.advanceTimersByTime(1);
 		expect(renderTodos(mode)).not.toContain("done task");
+	});
+
+	it("collapses activity details to the active todo and running-agent count", async () => {
+		await replaceMode();
+		setTodoClearDelay(-1);
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		session.setTodoPhases([
+			{
+				name: "Exploration",
+				tasks: [
+					{ content: "inventory repository packages", status: "completed" },
+					{ content: "map repository architecture", status: "in_progress" },
+					{ content: "summarize verification commands", status: "pending" },
+				],
+			},
+		]);
+		mode.setTodos(session.getTodoPhases());
+		await mode.init();
+
+		vi.useFakeTimers();
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "RepositoryScout",
+			index: 0,
+			agent: "scout",
+			description: "map repository architecture",
+			status: "started",
+			detached: true,
+		});
+		vi.advanceTimersByTime(100);
+
+		const collapsed = renderActivityDock(mode);
+		expect(collapsed).toContain("Activity ▾");
+		expect(collapsed).toContain("1/3");
+		expect(collapsed).toContain("map repository architecture");
+		expect(collapsed).toContain("1 agent");
+		expect(collapsed).not.toContain("summarize verification commands");
+		expect(collapsed).not.toContain("Subagents");
+
+		mode.toggleTodoExpansion();
+		const expanded = renderActivityDock(mode);
+		expect(expanded).toContain("Activity ▴");
+		expect(expanded).toContain("TODO");
+		expect(expanded).toContain("summarize verification commands");
+		expect(expanded).toContain("Subagents");
+		expect(expanded).toContain("RepositoryScout");
 	});
 
 	it("marks todos complete when subagent reconciliation reports a finished agent", async () => {

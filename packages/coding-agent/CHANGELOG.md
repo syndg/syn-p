@@ -14,6 +14,7 @@
 
 ### Changed
 
+- Made the fullscreen activity dock collapsible. Its compact view keeps the active todo and detached-agent count visible, while click-to-expand restores the full Todo and Subagents trees without hiding the working row.
 - Disabled `hashline` edit mode for Kimi, Mimo, DeepSeek Flash, and Stepfun models for stability
 - Refined the weekly Codex quota status to show remaining percentage and an hour-precise reset countdown without the redundant provider and window labels.
 

@@ -38,12 +38,21 @@ export interface FullscreenComposerOptions {
 	readonly scrollbar: FullscreenScrollbar;
 	readonly copyOnSelect: boolean;
 }
+export interface FullscreenDockAction {
+	readonly id: string;
+	/** Zero-based row within the unsliced dock passed to {@link FullscreenComposer.render}. */
+	readonly row: number;
+	readonly startCol?: number;
+	readonly endCol?: number;
+	readonly activate: () => void;
+}
 
 export interface FullscreenComposerFrame {
 	readonly width: number;
 	readonly height: number;
 	readonly content: readonly string[];
 	readonly dock: readonly string[];
+	readonly dockActions?: readonly FullscreenDockAction[];
 }
 
 interface SelectionPoint {
@@ -84,6 +93,8 @@ export class FullscreenComposer {
 	#selectionPressActive = false;
 	#selectionDragged = false;
 	#pressedUrl: string | undefined;
+	#dockActions: readonly FullscreenDockAction[] = [];
+	#pressedDockActionId: string | undefined;
 	#jumpTarget: JumpTarget | undefined;
 	#fixedOverlayRows: readonly number[] = [];
 	#jumpNeighborHasBackground = false;
@@ -100,6 +111,7 @@ export class FullscreenComposer {
 		this.#enabled = enabled;
 		this.#selectionPressActive = false;
 		this.#pressedUrl = undefined;
+		this.#pressedDockActionId = undefined;
 		this.#jumpNeighborHasBackground = false;
 		this.#hasRendered = false;
 		if (!enabled) this.#hideTransientScrollbar();
@@ -140,7 +152,18 @@ export class FullscreenComposer {
 		const previousJumpNeighborHasBackground = this.#jumpNeighborHasBackground;
 		const previousOffset = this.#scrollOffset;
 		const previousViewportHeight = this.#viewportHeight;
-		const dock = frame.dock.length > height ? frame.dock.slice(frame.dock.length - height) : frame.dock;
+		const dockOffset = Math.max(0, frame.dock.length - height);
+		const dock = frame.dock.slice(dockOffset);
+		const dockTop = height - dock.length;
+		this.#dockActions = (frame.dockActions ?? [])
+			.filter(action => action.row >= dockOffset && action.row < dockOffset + dock.length)
+			.map(action => ({ ...action, row: dockTop + action.row - dockOffset }));
+		if (
+			this.#pressedDockActionId !== undefined &&
+			!this.#dockActions.some(action => action.id === this.#pressedDockActionId)
+		) {
+			this.#pressedDockActionId = undefined;
+		}
 		const availableViewportHeight = Math.max(0, height - dock.length);
 		this.#viewportHeight = Math.max(0, availableViewportHeight - (this.#following ? 0 : 1));
 		this.#content = frame.content;
@@ -272,6 +295,22 @@ export class FullscreenComposer {
 			this.#scrollBy(event.wheel * WHEEL_SCROLL_LINES);
 			return;
 		}
+		const dockAction = this.#dockActionAt(event.row, event.col);
+		if (event.release && this.#pressedDockActionId !== undefined) {
+			const pressedId = this.#pressedDockActionId;
+			this.#pressedDockActionId = undefined;
+			if (dockAction?.id === pressedId) {
+				this.#clearSelection();
+				dockAction.activate();
+			}
+			return;
+		}
+		if (event.motion && this.#pressedDockActionId !== undefined) return;
+		if (event.leftClick && dockAction) {
+			this.#clearSelection();
+			this.#pressedDockActionId = dockAction.id;
+			return;
+		}
 		if (event.leftClick && this.#isJumpTarget(event.row, event.col)) {
 			this.#clearSelection();
 			this.#scrollToBottom();
@@ -312,6 +351,14 @@ export class FullscreenComposer {
 		this.#selectionFocus = point;
 		this.#pressedUrl = this.#osc8LinkAtColumn(this.#content[point.row] ?? "", point.col);
 		this.#options.requestRender();
+	}
+	#dockActionAt(row: number, col: number): FullscreenDockAction | undefined {
+		return this.#dockActions.find(action => {
+			if (action.row !== row) return false;
+			const start = action.startCol ?? 0;
+			const end = action.endCol ?? Number.POSITIVE_INFINITY;
+			return col >= start && col < end;
+		});
 	}
 
 	#selectionPoint(viewportRow: number, col: number): SelectionPoint | undefined {

@@ -181,7 +181,7 @@ import { StatusLineComponent } from "./components/status-line";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import type { LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
-import { Composer } from "./composer";
+import { Composer, type FullscreenDockActionComponent } from "./composer";
 import { writeComposerWelcomeCache } from "./composer-cache";
 import { BtwController } from "./controllers/btw-controller";
 import { CleanseCommandController } from "./controllers/cleanse-command-controller";
@@ -426,6 +426,35 @@ class TodoHudContainer extends AnchoredLiveContainer {
 		return super.render(width);
 	}
 }
+class ActivityDockContainer extends AnchoredLiveContainer implements FullscreenDockActionComponent {
+	constructor(
+		private readonly mode: InteractiveMode,
+		private readonly todos: TodoHudContainer,
+		private readonly subagents: AnchoredLiveContainer,
+	) {
+		super();
+		this.addChild(todos);
+		this.addChild(subagents);
+	}
+
+	override render(width: number): readonly string[] {
+		return this.mode.renderActivityDock(width, this.todos.render(width), this.subagents.render(width));
+	}
+
+	getFullscreenDockActions(renderedLines: readonly string[], width: number) {
+		const row = renderedLines.findIndex(line => Bun.stripANSI(line).trimStart().startsWith("Activity "));
+		if (row < 0) return [];
+		return [
+			{
+				id: "activity-dock.toggle",
+				row,
+				startCol: 0,
+				endCol: width,
+				activate: () => this.mode.toggleTodoExpansion(),
+			},
+		];
+	}
+}
 
 class StatusHudContainer extends AnchoredLiveContainer {
 	constructor(private readonly mode: InteractiveMode) {
@@ -573,8 +602,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	statusContainer: Container;
 	/** Whether {@link statusContainer} rendered lines in the latest frame; the band composer's editor top gap collapses only then. */
 	statusRowOccupied = false;
-	todoContainer: Container;
-	subagentContainer: Container;
+	todoContainer: TodoHudContainer;
+	subagentContainer: AnchoredLiveContainer;
+	activityDockContainer: ActivityDockContainer;
 	btwContainer: Container;
 	omfgContainer: Container;
 	cleanseContainer: Container;
@@ -946,6 +976,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusContainer = new StatusHudContainer(this);
 		this.todoContainer = new TodoHudContainer(this);
 		this.subagentContainer = new AnchoredLiveContainer();
+		this.activityDockContainer = new ActivityDockContainer(this, this.todoContainer, this.subagentContainer);
 		this.btwContainer = new AnchoredLiveContainer();
 		this.omfgContainer = new AnchoredLiveContainer();
 		this.cleanseContainer = new AnchoredLiveContainer();
@@ -1206,16 +1237,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.composer.setRuntimeChildren([
 			this.chatContainer,
 			this.pendingMessagesContainer,
-			this.todoContainer,
-			this.subagentContainer,
+			this.activityDockContainer,
 			this.btwContainer,
 			this.omfgContainer,
 			this.cleanseContainer,
 			this.errorBannerContainer,
 			this.modelCycleContainer,
 			this.deferredCommandContainer,
-			// Working loader / transient status sits below the sticky todo + subagent
-			// HUDs, just above the editor's hook-widget top margin — so it reads next to
+			// Working loader / transient status sits below the activity HUD, just above
+			// the editor's hook-widget top margin — so it reads next to
 			// the prompt while keeping the one-line gap above the editor (the band
 			// composer collapses that gap so its status band sits flush).
 			this.statusContainer,
@@ -2676,6 +2706,57 @@ export class InteractiveMode implements InteractiveModeContext {
 		const tailFilled = Math.max(0, Math.min(filled - contentLines.length, tail.length));
 		lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
 		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
+	}
+	renderActivityDock(
+		width: number,
+		todoLines: readonly string[],
+		subagentLines: readonly string[],
+	): readonly string[] {
+		// Short terminals already fold the active todo into the working row.
+		if (this.isCompactTodoMode()) return subagentLines;
+		if (todoLines.length === 0 && subagentLines.length === 0) return [];
+
+		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
+		const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
+		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
+		const activeAgents = this.#observerRegistry
+			.getSessions()
+			.filter(session => session.kind === "subagent" && session.status === "active" && session.detached === true);
+		const agentMeta =
+			activeAgents.length === 0
+				? undefined
+				: `${theme.icon.agents} ${activeAgents.length} ${activeAgents.length === 1 ? "agent" : "agents"}`;
+		const progress = totalTasks > 0 ? `${closedTasks}/${totalTasks}` : undefined;
+		const chevron = this.todoExpanded ? "▴" : "▾";
+		const header = `${theme.bold(theme.fg("accent", "Activity"))} ${theme.fg("accent", chevron)}`;
+		const metadata = [progress, agentMeta].filter((part): part is string => part !== undefined);
+
+		if (this.todoExpanded) {
+			const trimLeadingBlank = (lines: readonly string[]): readonly string[] =>
+				lines[0]?.trim() === "" ? lines.slice(1) : lines;
+			const todos = trimLeadingBlank(todoLines);
+			const subagents = trimLeadingBlank(subagentLines);
+			const headerMeta = metadata.length > 0 ? ` ${theme.fg("dim", `· ${metadata.join(" · ")}`)}` : "";
+			return [
+				"",
+				` ${header}${headerMeta}`,
+				...todos,
+				...(todos.length > 0 && subagents.length > 0 ? [""] : []),
+				...subagents,
+			];
+		}
+
+		const activeDescs = this.#getActiveSubagentDescriptions();
+		const activeTask = nextActionableTask(phases);
+		const task = activeTask
+			? this.#formatTodoLine(activeTask, "", todoMatchesAnyDescription(activeTask.content, activeDescs))
+			: totalTasks > 0
+				? theme.fg("success", `${theme.checkbox.checked} done`)
+				: undefined;
+		const details = [...metadata, task].filter((part): part is string => part !== undefined);
+		const line =
+			details.length > 0 ? `${header} ${theme.fg("dim", "·")} ${details.join(theme.fg("dim", " · "))}` : header;
+		return ["", ` ${truncateToWidth(line, Math.max(1, width - 1))}`];
 	}
 
 	isCompactTodoMode(): boolean {

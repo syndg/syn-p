@@ -119,6 +119,63 @@ describe("fullscreen composer", () => {
 		expect(Bun.stripANSI(changedDock[3] ?? "")).toContain("Jump to bottom");
 		expect(state.fullscreen.forceClearRows).toEqual([4, 3]);
 	});
+	it("toggles a dock action and reallocates transcript rows without moving fixed controls", () => {
+		const state = createFullscreen();
+		const content = Array.from({ length: 8 }, (_, index) => `line ${index + 1}`);
+		let expanded = false;
+		const action = (row: number) => [
+			{
+				id: "activity-dock.toggle",
+				row,
+				activate: () => {
+					expanded = !expanded;
+				},
+			},
+		];
+
+		const collapsed = state.fullscreen.render({
+			width: 40,
+			height: 7,
+			content,
+			dock: ["Activity ▾", "working", "editor"],
+			dockActions: action(0),
+		});
+		expect(collapsed.slice(0, 4).map(line => line.trimEnd())).toEqual([" line 5", " line 6", " line 7", " line 8"]);
+		expect(collapsed.slice(-2)).toEqual(["working", "editor"]);
+
+		state.fullscreen.handleInput("\x1b[<0;1;5M");
+		state.fullscreen.handleInput("\x1b[<0;1;5m");
+		expect(expanded).toBe(true);
+
+		const expandedFrame = state.fullscreen.render({
+			width: 40,
+			height: 7,
+			content,
+			dock: ["Activity ▴", "TODO", "task", "Subagents", "working", "editor"],
+			dockActions: action(0),
+		});
+		expect(expandedFrame[0]?.trimEnd()).toBe(" line 8");
+		expect(expandedFrame.slice(-2)).toEqual(["working", "editor"]);
+
+		state.fullscreen.handleInput("\x1b[<0;1;2M");
+		state.fullscreen.handleInput("\x1b[<0;1;2m");
+		expect(expanded).toBe(false);
+
+		const collapsedAgain = state.fullscreen.render({
+			width: 40,
+			height: 7,
+			content,
+			dock: ["Activity ▾", "working", "editor"],
+			dockActions: action(0),
+		});
+		expect(collapsedAgain.slice(0, 4).map(line => line.trimEnd())).toEqual([
+			" line 5",
+			" line 6",
+			" line 7",
+			" line 8",
+		]);
+		expect(collapsedAgain.slice(-2)).toEqual(["working", "editor"]);
+	});
 
 	it("keeps the fixed control out of repeated slow-scroll paints", () => {
 		const state = createFullscreen();

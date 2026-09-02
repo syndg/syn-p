@@ -22,10 +22,18 @@ import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./comp
 import {
 	FullscreenComposer,
 	type FullscreenExitOutput,
+	type FullscreenDockAction,
 	type FullscreenScrollbar,
 	type TuiMode,
 } from "./fullscreen-composer";
 import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
+export interface FullscreenDockActionComponent extends Component {
+	getFullscreenDockActions(renderedLines: readonly string[], width: number): readonly FullscreenDockAction[];
+}
+
+function isFullscreenDockActionComponent(component: Component): component is FullscreenDockActionComponent {
+	return "getFullscreenDockActions" in component && typeof component.getFullscreenDockActions === "function";
+}
 
 const DOUBLE_INTERRUPT_MS = 500;
 
@@ -268,8 +276,14 @@ export class Composer implements TerminalFrameProvider {
 			}
 			const contentWidth = this.#fullscreen.contentWidth(width);
 			const header = this.#header.render(contentWidth);
-			const dock = this.#renderRoots([this.#bootstrapInputGap, this.editor, this.#statusHost], width);
-			const rendered = this.#fullscreen.render({ width, height: rows, content: header, dock });
+			const dock = this.#renderFullscreenDock([this.#bootstrapInputGap, this.editor, this.#statusHost], width);
+			const rendered = this.#fullscreen.render({
+				width,
+				height: rows,
+				content: header,
+				dock: dock.lines,
+				dockActions: dock.actions,
+			});
 			return { viewport: rendered, forceClearRows: this.#fullscreen.forceClearRows };
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
@@ -277,11 +291,17 @@ export class Composer implements TerminalFrameProvider {
 			const contentWidth = this.#fullscreen.contentWidth(width);
 			const header = this.#header.render(contentWidth);
 			const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), contentWidth);
-			const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
+			const dock = this.#renderFullscreenDock(roots.slice(transcriptIndex + 1), width);
 			const now = performance.now();
 			const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 			const content = [...header, ...preRoots, ...transcript.renderFullscreen(contentWidth, frame)];
-			const rendered = this.#fullscreen.render({ width, height: rows, content, dock: after });
+			const rendered = this.#fullscreen.render({
+				width,
+				height: rows,
+				content,
+				dock: dock.lines,
+				dockActions: dock.actions,
+			});
 			return { viewport: rendered, forceClearRows: this.#fullscreen.forceClearRows };
 		}
 		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
@@ -467,6 +487,25 @@ export class Composer implements TerminalFrameProvider {
 		for (const root of roots) rows.push(...root.render(width));
 		return rows;
 	}
+	#renderFullscreenDock(
+		roots: readonly Component[],
+		width: number,
+	): { lines: string[]; actions: FullscreenDockAction[] } {
+		const lines: string[] = [];
+		const actions: FullscreenDockAction[] = [];
+		for (const root of roots) {
+			const rendered = root.render(width);
+			const rowOffset = lines.length;
+			lines.push(...rendered);
+			if (!isFullscreenDockActionComponent(root)) continue;
+			for (const action of root.getFullscreenDockActions(rendered, width)) {
+				if (action.row < 0 || action.row >= rendered.length) continue;
+				actions.push({ ...action, row: rowOffset + action.row });
+			}
+		}
+		return { lines, actions };
+	}
+
 	/**
 	 * Mounted-runtime rows for the transient resize buffer. Only the trailing
 	 * viewport can survive the caller's bottom slice, so the transcript renders
