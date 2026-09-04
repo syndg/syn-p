@@ -18,13 +18,6 @@ interface TemplateProbeResult {
 	assetsRemoved: number;
 }
 
-const expectedTemplate: TemplateProbeResult = {
-	chars: 376_552,
-	bytes: 376_708,
-	sha256: "8bb9e3ecf2f246aa58b83c97beac7f698f54dbc13433b01a65c841e2598060e4",
-	stableCache: true,
-	assetsRemoved: 0,
-};
 const assetDir = new URL("../src/export/html/", import.meta.url);
 const templateProbePath = path.resolve(import.meta.dir, "fixtures", "html-export-template-probe.ts");
 const heapProbePath = path.resolve(import.meta.dir, "fixtures", "html-export-static-import-heap-probe.ts");
@@ -74,6 +67,20 @@ function composeExpectedTemplate(): string {
 		.replace("<template-tool-views/>", () => `<script>${toolViewsJs}</script>`)
 		.replace("<template-js/>", () => `<script>${templateJs}</script>`);
 }
+
+/** Probe result every bundle shape must reproduce: the composed source template, byte for byte. */
+function expectedProbeResult(): TemplateProbeResult {
+	const template = composeExpectedTemplate();
+	return {
+		chars: template.length,
+		bytes: Buffer.byteLength(template),
+		sha256: new Bun.CryptoHasher("sha256").update(template).digest("hex"),
+		stableCache: true,
+		assetsRemoved: 0,
+	};
+}
+
+const expectedTemplate = expectedProbeResult();
 
 async function runProbe(command: string[]): Promise<TemplateProbeResult> {
 	const proc = Bun.spawn(command, {
