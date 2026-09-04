@@ -673,7 +673,7 @@ describe("Context overflow error handling", () => {
 
 	let llamaCppRunning = false;
 	try {
-		execSync("curl -s --max-time 1 http://localhost:8081/health > /dev/null", { stdio: "ignore" });
+		execSync("curl -fs --max-time 1 http://localhost:8081/health > /dev/null", { stdio: "ignore" });
 		llamaCppRunning = true;
 	} catch {
 		llamaCppRunning = false;
