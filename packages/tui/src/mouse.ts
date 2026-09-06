@@ -18,7 +18,12 @@ export interface SgrMouseEvent {
 	row: number;
 	/** True for a release report (`m` suffix). */
 	release: boolean;
-	/** Vertical wheel direction: -1 up, 1 down; null for non-wheel and horizontal-wheel reports. */
+	/**
+	 * Vertical wheel direction: -1 up, 1 down, null when not a vertical wheel
+	 * event. Horizontal wheel reports (buttons 66/67, the sideways drift of a
+	 * two-finger trackpad scroll) are not a direction: treating them as one
+	 * scrolled the selectors up and back down at the end of a gesture.
+	 */
 	wheel: -1 | 1 | null;
 	/** True when the pointer moved (hover or drag) rather than clicked. */
 	motion: boolean;
