@@ -21,7 +21,7 @@ type CodingAgentBucket = "singleton" | "ui" | "runtime" | "native";
 interface TestCommand {
 	label: string;
 	cwd: string;
-	/** argv without `--parallel`; the runner appends it from `parallel` and the pool's CPU budget. */
+	/** argv before the runner adds its per-test timeout and, unless `--serial`, `--parallel`. */
 	command: string[];
 	/** `bun test --parallel` width this chunk wants when it has the machine to itself. */
 	parallel?: number;
@@ -32,6 +32,11 @@ type CodingAgentTestPartition = Record<CodingAgentBucket, string[]>;
 const repoRoot = path.join(import.meta.dir, "..");
 const args = process.argv.slice(2);
 const isDryRun = args.includes("--dry-run");
+// `--serial` keeps the same package/bucket file set, but runs each file in its
+// own `bun test` process without Bun's `--parallel` flag. This preserves
+// per-file isolation while avoiding the faulty parallel-worker runtime; every
+// planned test file still runs.
+const isSerial = args.includes("--serial");
 const requestedMode = args.find(arg => !arg.startsWith("--")) ?? "all";
 // `--only-failures` is Bun's output filter — it hides passing tests within each
 // chunk, keeping the log terse, and is the default here (CI and the root
@@ -65,8 +70,8 @@ const validModes: Record<Mode, true> = {
 // separate `bun test` child process. A fresh process per chunk resets Bun's
 // heap and reaps any dangling spawned children between groups, keeping peak RSS
 // under the CI runner's OOM ceiling (a single 170–370-file invocation gets
-// SIGKILLed at 137). The singleton/global-state bucket is left whole: its suites
-// co-locate in one process to exercise process-wide state, so they must not split.
+// SIGKILLed at 137). Normal runs leave the singleton/global-state bucket whole;
+// `--serial` deliberately overrides every bucket to one file per process.
 //
 // The UI/TUI bucket uses a smaller chunk (5) than the others: its suites build up
 // native ghostty-vt cells, and bun 1.3.14's GC aborts (SIGTRAP/SIGABRT, exit
@@ -211,6 +216,30 @@ function workspaceTestCommand(pkg: string, parallel: number, options: { extraArg
 	};
 }
 
+async function workspaceTestCommands(
+	packages: string[],
+	parallel: number,
+	options: { extraArgs?: string[] } = {},
+): Promise<TestCommand[]> {
+	if (!isSerial) return packages.map(pkg => workspaceTestCommand(pkg, parallel, options));
+
+	const { extraArgs = [] } = options;
+	const commands: TestCommand[] = [];
+	for (const pkg of packages) {
+		const cwd = path.join(repoRoot, pkg);
+		const testFiles = await collectTestsUnder(cwd, cwd);
+		for (const testFile of testFiles) {
+			commands.push({
+				label: `${pkg} (${testFile}; serial)`,
+				cwd: pkg,
+				command: ["bun", "test", ...extraArgs, testFile],
+				parallel,
+			});
+		}
+	}
+	return commands;
+}
+
 // The Rust suite as one pooled command, so root `bun run test` reports TS and
 // Rust under the same progress stream / failure report. Delegates to
 // run-rs-task.ts, which self-skips when no Rust-affecting files changed locally
@@ -232,7 +261,7 @@ async function collectTestsUnder(root: string, baseDir: string): Promise<string[
 			files.push(...(await collectTestsUnder(filePath, baseDir)));
 			continue;
 		}
-		if (!entry.isFile() || !entry.name.endsWith(".test.ts")) {
+		if (!entry.isFile() || !/\.test\.tsx?$/.test(entry.name)) {
 			continue;
 		}
 		files.push(path.relative(baseDir, filePath).split(path.sep).join("/"));
@@ -307,14 +336,14 @@ async function codingAgentTestCommands(bucket: CodingAgentBucket): Promise<TestC
 		throw new Error(`No coding-agent ${bucket} tests matched`);
 	}
 	const plan = codingAgentBucketPlans[bucket];
-	const chunkSize = plan.chunkSize ?? testFiles.length;
+	const chunkSize = isSerial ? 1 : (plan.chunkSize ?? testFiles.length);
 	const chunkCount = Math.ceil(testFiles.length / chunkSize);
 	const commands: TestCommand[] = [];
 	for (let i = 0; i < testFiles.length; i += chunkSize) {
 		const chunk = testFiles.slice(i, i + chunkSize);
 		const chunkLabel = chunkCount > 1 ? ` chunk ${commands.length + 1}/${chunkCount}` : "";
 		commands.push({
-			label: `packages/coding-agent (${plan.label}; ${testFiles.length} files; parallel=${plan.parallel}${chunkLabel}; ${chunk.length} files)`,
+			label: `packages/coding-agent (${plan.label}; ${testFiles.length} files; ${isSerial ? "serial" : `parallel=${plan.parallel}`}${chunkLabel}; ${chunk.length} files)`,
 			cwd: "packages/coding-agent",
 			command: ["bun", "test", ...onlyFailuresArgs, ...chunk],
 			parallel: plan.parallel,
@@ -326,9 +355,9 @@ async function codingAgentTestCommands(bucket: CodingAgentBucket): Promise<TestC
 async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 	switch (mode) {
 		case "workspace":
-			return fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8));
+			return await workspaceTestCommands(fastWorkspacePackages, 8);
 		case "native":
-			return nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4));
+			return await workspaceTestCommands(nativeAndIntegrationPackages, 4);
 		case "coding-agent-singleton":
 			return await codingAgentTestCommands("singleton");
 		case "coding-agent-ui":
@@ -357,9 +386,9 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 		// one failure report. Repo script tests remain available via `test:scripts`.
 		case "local-ts":
 			return [
-				...fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8, { extraArgs: onlyFailuresArgs })),
-				...nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
-				...localOnlyWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
+				...(await workspaceTestCommands(fastWorkspacePackages, 8, { extraArgs: onlyFailuresArgs })),
+				...(await workspaceTestCommands(nativeAndIntegrationPackages, 4, { extraArgs: onlyFailuresArgs })),
+				...(await workspaceTestCommands(localOnlyWorkspacePackages, 4, { extraArgs: onlyFailuresArgs })),
 				...(await commandsForMode("coding-agent-heavy")),
 			];
 		// `local` is what root `bun run test` drives: the full TS suite plus the
@@ -587,15 +616,23 @@ function testTimeoutMs(): number {
 	return 30_000;
 }
 
-// Materialize each chunk's argv against the pool width it will actually run at,
-// rewriting `parallel` from the requested width to the granted one so later
-// reporting reads the truth. A `parallel` request marks the command as a `bun
-// test` invocation, so that is also where the shared per-test timeout is
-// applied; the Rust task, which has neither, passes through untouched.
-function applyChunkBudget(commands: TestCommand[], poolWidth: number): TestCommand[] {
+// Materialize each chunk's argv against the pool width it will actually run at.
+// Normal runs rewrite `parallel` from the requested width to the granted one.
+// `--serial` omits Bun's `--parallel` flag entirely (rather than passing
+// `--parallel=1`, which still enables per-file isolation) while preserving the
+// shared per-test timeout. The Rust task has no `parallel` request and passes
+// through untouched.
+function applyChunkBudget(commands: TestCommand[], poolWidth: number, serial = false): TestCommand[] {
 	const timeout = testTimeoutMs();
 	return commands.map(testCommand => {
 		if (testCommand.parallel === undefined) return testCommand;
+		if (serial) {
+			return {
+				...testCommand,
+				command: [...testCommand.command, `--timeout=${timeout}`],
+				parallel: undefined,
+			};
+		}
 		const parallel = budgetedParallel(testCommand.parallel, poolWidth);
 		return {
 			...testCommand,
@@ -930,12 +967,13 @@ if (import.meta.main) {
 	const explicitConcurrency = Boolean(Bun.env.OMP_TEST_CONCURRENCY?.trim());
 	// CI defaults to one process at a time, but memory-sized workflow buckets
 	// explicitly opt into bounded process concurrency. Local runs fan out by
-	// default and may use the same override. Resolved before the dry-run check so
-	// `--dry-run` prints the argv the real run would use, budget included.
-	const pooled = requestedCommands.length > 1 && (!isCI() || explicitConcurrency);
+	// default and may use the same override. `--serial` always selects the
+	// sequential path. Resolved before the dry-run check so `--dry-run` prints
+	// the argv the real run would use, budget included.
+	const pooled = !isSerial && requestedCommands.length > 1 && (!isCI() || explicitConcurrency);
 	// The sequential path is a pool of one, so a lone chunk keeps the whole budget.
 	const poolWidth = pooled ? testConcurrency(requestedCommands.length) : 1;
-	const testCommands = applyChunkBudget(requestedCommands, poolWidth);
+	const testCommands = applyChunkBudget(requestedCommands, poolWidth, isSerial);
 	if (pooled && !isDryRun) {
 		await runTestCommandsInParallel(testCommands, poolWidth);
 	} else {

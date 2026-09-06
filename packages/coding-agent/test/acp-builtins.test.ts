@@ -13,7 +13,14 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
-import { getProjectDir, removeWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
+import {
+	__resetDirsFromEnvForTests,
+	getProjectDir,
+	removeWithRetries,
+	setAgentDir,
+	setProjectDir,
+} from "@oh-my-pi/pi-utils";
+import { RESOURCE_URIS } from "./fixtures/resources-no-templates-mcp";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -1180,12 +1187,44 @@ describe("wave 4 commands", () => {
 		expect(output[0]).toContain("reload");
 	});
 
-	it("/mcp resources: outputs server list or no-server message", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/mcp resources", runtime);
-		expect(result).toEqual({ consumed: true });
-		// No servers configured in tmp project dir — should report that
-		expect(output[0]).toMatch(/No MCP servers configured|No resources/);
+	it("/mcp resources: enumerates resources from a configured server", async () => {
+		const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-mcp-resources-"));
+		const agentDir = path.join(tempRoot, "agent");
+		const projectDir = path.join(tempRoot, "project");
+		const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+		const originalOmpProfile = process.env.OMP_PROFILE;
+		const originalPiProfile = process.env.PI_PROFILE;
+		setAgentDir(agentDir);
+		try {
+			const { output, runtime } = createRuntime();
+			runtime.cwd = projectDir;
+			await Bun.write(
+				path.join(projectDir, ".omp", "mcp.json"),
+				`${JSON.stringify({
+					mcpServers: {
+						fixture: {
+							type: "stdio",
+							command: process.execPath,
+							args: [path.join(import.meta.dir, "fixtures", "resources-no-templates-mcp.ts")],
+						},
+					},
+				})}\n`,
+			);
+
+			const result = await executeAcpBuiltinSlashCommand("/mcp resources", runtime);
+
+			expect(result).toEqual({ consumed: true });
+			expect(output[0]?.split("\n")).toEqual(RESOURCE_URIS.map(uri => `fixture/${uri}`));
+		} finally {
+			if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+			if (originalOmpProfile === undefined) delete process.env.OMP_PROFILE;
+			else process.env.OMP_PROFILE = originalOmpProfile;
+			if (originalPiProfile === undefined) delete process.env.PI_PROFILE;
+			else process.env.PI_PROFILE = originalPiProfile;
+			__resetDirsFromEnvForTests();
+			await removeWithRetries(tempRoot);
+		}
 	});
 
 	it("/mcp unknown-verb: returns usage pointing to help", async () => {

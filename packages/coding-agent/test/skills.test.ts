@@ -13,7 +13,7 @@ import {
 	parseSkillInvocation,
 	type Skill,
 } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import { restoreEnvValue } from "./helpers/settings-test-state";
 const fixturesDir = path.resolve(import.meta.dirname, "fixtures/skills");
 const collisionFixturesDir = path.resolve(import.meta.dirname, "fixtures/skills-collision");
@@ -29,12 +29,9 @@ const expectedFixtureSkillOrder: string[] = [
 ];
 
 /**
- * Disable every named built-in skill source. Used by `loadSkills` option tests
- * that need to isolate a custom directory or assert "no built-in leakage". Tests
- * MUST spread this in: the discovery surface only ignores `~/.<dir>/skills/*` if
- * every provider toggle resolves to false, otherwise stray skills from the
- * developer's real `$HOME` (e.g. `~/.agents/skills/<name>/SKILL.md`) leak into
- * the assertion.
+ * Disable every option-governed built-in skill source. Managed skills are
+ * unconditional, so strict isolation tests bracket their load with a temporary
+ * agent directory via {@link withIsolatedAgentDir}.
  */
 const DISABLE_ALL_BUILTIN_SKILLS = {
 	enableCodexUser: false,
@@ -45,6 +42,22 @@ const DISABLE_ALL_BUILTIN_SKILLS = {
 	enableAgentsUser: false,
 	enableAgentsProject: false,
 } as const;
+async function withIsolatedAgentDir<T>(callback: () => Promise<T>): Promise<T> {
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalOmpProfile = process.env.OMP_PROFILE;
+	const originalPiProfile = process.env.PI_PROFILE;
+	const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-skills-agent-"));
+	setAgentDir(path.join(tempRoot, "agent"));
+	try {
+		return await callback();
+	} finally {
+		restoreEnvValue("PI_CODING_AGENT_DIR", originalAgentDir);
+		restoreEnvValue("OMP_PROFILE", originalOmpProfile);
+		restoreEnvValue("PI_PROFILE", originalPiProfile);
+		__resetDirsFromEnvForTests();
+		await removeWithRetries(tempRoot);
+	}
+}
 
 describe("skills", () => {
 	describe("loadSkillsFromDir", () => {
@@ -152,7 +165,6 @@ describe("skills", () => {
 			expect(skills).toHaveLength(0);
 			expect(warnings).toHaveLength(0);
 		});
-
 		it("should return empty when scanning a single skill directory directly", async () => {
 			const { skills } = await loadSkillsFromDir({
 				dir: path.join(fixturesDir, "valid-skill"),
@@ -167,10 +179,12 @@ describe("skills", () => {
 		let customDirectorySkills: LoadSkillsResult;
 
 		beforeAll(async () => {
-			customDirectorySkills = await loadSkills({
-				...DISABLE_ALL_BUILTIN_SKILLS,
-				customDirectories: [fixturesDir],
-			});
+			customDirectorySkills = await withIsolatedAgentDir(() =>
+				loadSkills({
+					...DISABLE_ALL_BUILTIN_SKILLS,
+					customDirectories: [fixturesDir],
+				}),
+			);
 		});
 		it("should load from customDirectories only when built-ins disabled", async () => {
 			const { skills } = customDirectorySkills;
@@ -486,7 +500,6 @@ description: Skill loaded from a tilde-expanded custom directory.
 # Tilde Skill
 `,
 		);
-
 		try {
 			const { skills: withTilde } = await loadSkills({
 				...DISABLE_ALL_BUILTIN_SKILLS,
@@ -505,7 +518,7 @@ description: Skill loaded from a tilde-expanded custom directory.
 	});
 
 	it("should return empty when all sources disabled and no custom dirs", async () => {
-		const { skills } = await loadSkills({ ...DISABLE_ALL_BUILTIN_SKILLS });
+		const { skills } = await withIsolatedAgentDir(() => loadSkills({ ...DISABLE_ALL_BUILTIN_SKILLS }));
 		expect(skills).toHaveLength(0);
 	});
 

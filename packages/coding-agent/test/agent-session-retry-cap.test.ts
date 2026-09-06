@@ -1494,6 +1494,10 @@ describe("AgentSession retry delay cap", () => {
 		if (!exhaustedModel || !fallbackModel) {
 			throw new Error("Expected bundled OpenCode Go and fallback test models to exist");
 		}
+		const siblingBlockMs = 60_000;
+		// Keep the sibling blocked beyond this test's timeout budget so unrelated
+		// suite load cannot expire the setup window before the failing turn. The
+		// retry wait itself is mocked below, so this adds no wall-clock delay.
 
 		await authStorage.set("opencode-go", [
 			{ type: "api_key", key: "opencode-go-key-1" },
@@ -1502,7 +1506,7 @@ describe("AgentSession retry delay cap", () => {
 		authStorage.setRuntimeApiKey("openai", "openai-test-key");
 		await modelRegistry.getApiKeyForProvider("opencode-go", "other-session");
 		const blocked = await authStorage.markUsageLimitReached("opencode-go", "other-session", {
-			retryAfterMs: 2_000,
+			retryAfterMs: siblingBlockMs,
 		});
 		expect(blocked.switched).toBe(true);
 		const usageLimitSpy = vi.spyOn(authStorage, "markUsageLimitReached");
@@ -1555,14 +1559,14 @@ describe("AgentSession retry delay cap", () => {
 		expect(usageLimitSpy).toHaveBeenCalledTimes(1);
 		const usageLimitResult = usageLimitSpy.mock.results[0]?.value;
 		expect(usageLimitResult).toBeDefined();
-		expect(await usageLimitResult).toMatchObject({ retryAtMs: expect.any(Number), switched: false });
+		expect(await usageLimitResult).toMatchObject({ retryAtMs: blocked.blockedUntilMs, switched: false });
 
 		expect(requestedModels).toEqual([
 			`${exhaustedModel.provider}/${exhaustedModel.id}`,
 			`${exhaustedModel.provider}/${exhaustedModel.id}`,
 		]);
 		expect(fallbackEvents).toEqual([]);
-		expect(waitSpy.mock.calls.some(call => call[0] >= 1_000 && call[0] <= 3_000)).toBe(true);
+		expect(waitSpy.mock.calls.some(call => call[0] > 0 && call[0] <= siblingBlockMs + 1_000)).toBe(true);
 		expect(lastAssistant(session).content).toContainEqual({
 			type: "text",
 			text: "recovered after sibling unblock",
