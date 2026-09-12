@@ -44,6 +44,7 @@ function makeComponent(
 					premiumRequests: 0,
 					cost: 0,
 				}),
+				getSessionName: () => undefined,
 			},
 			fetchUsageReports: async () => reports,
 			modelRegistry: {
@@ -51,8 +52,10 @@ function makeComponent(
 					getOAuthAccountIdentity: (provider: string) =>
 						provider === options.provider ? options.activeIdentity : undefined,
 				},
+				isUsingOAuth: () => false,
 			},
 			getAsyncJobSnapshot: () => ({ running: [] }),
+			isFastModeActive: () => false,
 			getContextUsage: () => undefined,
 		} as unknown as ConstructorParameters<typeof StatusLineComponent>[0]),
 	);
