@@ -437,15 +437,13 @@ class ActivityDockContainer extends AnchoredLiveContainer implements FullscreenD
 	constructor(
 		private readonly mode: InteractiveMode,
 		private readonly todos: TodoHudContainer,
-		private readonly subagents: AnchoredLiveContainer,
 	) {
 		super();
 		this.addChild(todos);
-		this.addChild(subagents);
 	}
 
 	override render(width: number): readonly string[] {
-		return this.mode.renderActivityDock(width, this.todos.render(width), this.subagents.render(width));
+		return this.mode.renderActivityDock(width, this.todos.render(width));
 	}
 
 	getFullscreenDockActions(renderedLines: readonly string[], width: number) {
@@ -1191,7 +1189,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusContainer = new StatusHudContainer(this);
 		this.todoContainer = new TodoHudContainer(this);
 		this.subagentContainer = new AnchoredLiveContainer();
-		this.activityDockContainer = new ActivityDockContainer(this, this.todoContainer, this.subagentContainer);
+		this.activityDockContainer = new ActivityDockContainer(this, this.todoContainer);
 		this.btwContainer = new AnchoredLiveContainer();
 		this.omfgContainer = new AnchoredLiveContainer();
 		this.cleanseContainer = new AnchoredLiveContainer();
@@ -1458,6 +1456,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.chatContainer,
 			this.pendingMessagesContainer,
 			this.activityDockContainer,
+			this.subagentContainer,
 			this.btwContainer,
 			this.omfgContainer,
 			this.cleanseContainer,
@@ -3087,14 +3086,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
 		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
-	renderActivityDock(
-		width: number,
-		todoLines: readonly string[],
-		subagentLines: readonly string[],
-	): readonly string[] {
+	renderActivityDock(width: number, todoLines: readonly string[]): readonly string[] {
 		// Short terminals already fold the active todo into the working row.
-		if (this.isCompactTodoMode()) return subagentLines;
-		if (todoLines.length === 0 && subagentLines.length === 0) return [];
+		if (this.isCompactTodoMode() || todoLines.length === 0) return [];
 
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
 		const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
@@ -3110,20 +3104,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		const chevron = this.todoExpanded ? "▴" : "▾";
 		const header = `${theme.bold(theme.fg("accent", "Activity"))} ${theme.fg("accent", chevron)}`;
 		const metadata = [progress, agentMeta].filter((part): part is string => part !== undefined);
-
 		if (this.todoExpanded) {
-			const trimLeadingBlank = (lines: readonly string[]): readonly string[] =>
-				lines[0]?.trim() === "" ? lines.slice(1) : lines;
-			const todos = trimLeadingBlank(todoLines);
-			const subagents = trimLeadingBlank(subagentLines);
+			const todos = todoLines[0]?.trim() === "" ? todoLines.slice(1) : todoLines;
 			const headerMeta = metadata.length > 0 ? ` ${theme.fg("dim", `· ${metadata.join(" · ")}`)}` : "";
-			return [
-				"",
-				` ${header}${headerMeta}`,
-				...todos,
-				...(todos.length > 0 && subagents.length > 0 ? [""] : []),
-				...subagents,
-			];
+			return ["", ` ${header}${headerMeta}`, ...todos];
 		}
 
 		const activeDescs = this.#getActiveSubagentDescriptions();

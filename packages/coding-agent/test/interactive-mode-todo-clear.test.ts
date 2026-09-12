@@ -248,8 +248,6 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(expanded).toContain("Activity ▴");
 		expect(expanded).toContain("TODO");
 		expect(expanded).toContain("summarize verification commands");
-		expect(expanded).toContain("Subagents");
-		expect(expanded).toContain("RepositoryScout");
 	});
 
 	it("marks todos complete when subagent reconciliation reports a finished agent", async () => {
