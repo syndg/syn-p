@@ -40,12 +40,17 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 		const output = await Bun.build({
 			entrypoints: [options.entrypoint],
 			root: options.repoRoot,
+			format: "esm",
 			external: [...COMPILED_EXTERNAL_DEPENDENCIES],
 			define: {
 				"process.env.PI_COMPILED": JSON.stringify("true"),
 				"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
 			},
+			// Precompiled bytecode skips parsing the ~20 MB bundle at boot:
+			// `omp --version` 256 ms -> 30 ms on M4 Max (+52 MB binary).
+			// Bytecode rejects top-level await in the bundle graph.
+			bytecode: true,
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,

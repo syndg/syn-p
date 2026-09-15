@@ -6,6 +6,18 @@
 
 - Fixed fullscreen shutdown leaving Kitty keyboard reporting active in the parent shell, which could switch vi-mode prompts into command mode.
 - Fixed horizontal SGR wheel reports from trackpads being decoded as vertical down-scroll events.
+## [18.2.0] - 2026-09-15
+
+### Added
+
+- Added `Editor.textRevision` for content-dependent render caches, including undo and draft restoration.
+- Added collapseToAtom method to compress text spans into UI-friendly atoms
+
+### Changed
+
+- Redrawing unchanged terminal rows now avoids rescanning ANSI, hyperlinks, and images.
+- Terminal UIs reach their first frame with a smaller startup module graph.
+
 ## [18.1.17] - 2026-09-10
 
 ### Added
